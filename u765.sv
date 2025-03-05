@@ -450,7 +450,9 @@ always @(posedge clk_sys) begin
 					//i_current_sector <= 1'd1;
 				end else begin
 					image_trackinfo_dirty[i_current_drive] <= 1;
-					begin
+					if (fast) begin
+						pcn[i_current_drive] <= ncn[i_current_drive];
+					end else begin
 						if (pcn[i_current_drive] > ncn[i_current_drive]) pcn[i_current_drive] <= pcn[i_current_drive] - 1'd1;
 						if (pcn[i_current_drive] < ncn[i_current_drive]) pcn[i_current_drive] <= pcn[i_current_drive] + 1'd1;
 						i_step_state[i_current_drive] <= i_srt;

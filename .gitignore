@@ -1,3 +1,4 @@
 *.vcd
 *~
 obj_dir
+u765_tb

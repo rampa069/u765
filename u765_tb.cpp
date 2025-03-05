@@ -20,6 +20,8 @@ static unsigned char sdbuf[512];
 static FILE *edsk;
 static int reading;
 static int read_ptr;
+static int fast_mode;
+
 
 // Estructura para almacenar información sobre las interrupciones
 struct InterruptInfo {
@@ -78,14 +80,14 @@ void tick(int c) {
         info.acknowledged = false;
         
         // Intentar determinar la causa
-        if (status != -1) {
+        //if (status != -1) {
             if (status & 0x80) info.cause = "Comando completado";
             else if (status & 0x40) info.cause = "Ejecución de fase";
             else if (status & 0x20) info.cause = "Datos listos";
             else info.cause = "Desconocida";
-        } else {
-            info.cause = "Desconocida (a0 no es 0)";
-        }
+        //} else {
+        //    info.cause = "Desconocida (a0 no es 0)";
+        //}
         
         interrupt_log.push_back(info);
         
@@ -533,6 +535,7 @@ void test_interrupciones() {
     tb->ready = 1;
     tb->available = 1;
     tb->density = 1;
+    tb->fast = fast_mode;
     wait(1000);
     
     // 1. Generar y verificar interrupción durante recalibrado
@@ -656,14 +659,15 @@ void test_interrupciones() {
 int main(int argc, char **argv) {
     // Verificar argumentos de línea de comando
     if (argc < 2) {
-        printf("Uso: %s <archivo.dsk> [test_mode]\n", argv[0]);
+        printf("Uso: %s <archivo.dsk> [test_mode] [fast_mode]\n", argv[0]);
         printf("  test_mode: 0=boot completo, 1=test interrupciones\n");
+        printf("  fast_mode: 0=real, 1=fast\n");
         return -1;
     }
 
     // Modo de prueba (0=boot normal, 1=test interrupciones)
     int test_mode = (argc > 2) ? atoi(argv[2]) : 0;
-
+    fast_mode = (argc > 3) ? atoi(argv[3]) : 0;
     // Inicializar disco de prueba
     edsk = fopen(argv[1], "rb");
     if (!edsk) {
