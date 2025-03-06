@@ -315,7 +315,7 @@ buff_wait <= 0;
 			image_wp[i] <= img_wp[i];
 			image_size[i] <= img_size;
 			image_scan_state[i] <= |img_size; //hacky
-			image_ready[i] <= 0;
+			image_ready[i] <= 0;  
 			image_density[i] <= (img_size > 250000) ? CF2DD : CF2; // very hacky
 			//int_state[i] <= 1;
 			seek_state[i] <= 0;
@@ -380,6 +380,8 @@ buff_wait <= 0;
 							end
 							image_scan_state[i_current_drive] <= 3;
 						end else begin
+							$display("*** Setting image_ready[%d]=1, tracks=%d, sides=%d", 
+             					i_current_drive, image_tracks[i_current_drive], image_sides[i_current_drive]);
 							image_ready[i_current_drive] <= 1;
 							image_scan_state[i_current_drive] <= 0;
 							image_trackinfo_dirty[i_current_drive] <= 1;
@@ -1631,7 +1633,7 @@ COMMAND_FORMAT_TRACK:
 					if (i_scan_mode != 2'b00) begin
 						i_write <= 1'b0;
 					end
-					
+
 					if (i_write & image_wp[ds0]) begin
 						$display("ERROR: Disk is write protected");
 						status[0] <= 8'h40;
@@ -1678,6 +1680,7 @@ COMMAND_FORMAT_TRACK:
 						state <= COMMAND_RELOAD_TRACKINFO2;
 					end else begin
 						image_trackinfo_dirty[ds0] <= 0;
+						image_ready[ds0] <= 1;  //rampa
 						hds <= old_hds;
 						state <= i_command;
 					end
