@@ -12,10 +12,12 @@ module u765_test
 	input            nWR,       // i/o write
 	input      [7:0] din,       // i/o data in
 	output     [7:0] dout,      // i/o data out
-        input            tc,
-        output           activity_led,
-        input     [1:0]  density,
-        output           int_out,
+    
+	input            tc,
+    output           activity_led,
+    input     [1:0]  density,
+    output           int_out,
+	output           prepare,
 	input      [1:0] img_mounted, // signaling that new image has been mounted
 	input            img_wp,      // write protect. latched at img_mounted
 	input     [31:0] img_size,    // size of image in bytes
@@ -37,16 +39,17 @@ u765 #(100) u765 (
 	.ready(ready),
 	.motor(motor),
 	.available(available),
-	.fast(fast),
+	.fast(1'b1),
 	.a0(a0),
 	.nRD(nRD),
 	.nWR(nWR),
 	.din(din),
 	.dout(dout),
-        .int_out(int_out),
-        .tc(tc),
-        .activity_led(activity_led),
-        .density(density),
+	.int_out(int_out),
+	.tc(tc),
+	.activity_led(activity_led),
+	.density(density),
+	.prepare(prepare),
 	.img_mounted(img_mounted),
 	.img_wp(img_wp),
 	.img_size(img_size),

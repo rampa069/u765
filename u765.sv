@@ -54,7 +54,7 @@ module u765 #(
     input  wire  [1:0] density,       // CF2 = 0, CF2DD = 1
     output logic       activity_led,  // Activity LED
     input  wire        fast,          // Fast mode   
-
+    output wire  [ 1:0] prepare,
     input  wire  [ 1:0] img_mounted,   // signaling that new image has been mounted
     input  wire  [ 1:0] img_wp,        // write protect. latched at img_mounted
     input  wire  [31:0] img_size,      // size of image in bytes
@@ -211,10 +211,21 @@ typedef enum bit [1:0] {
   logic ndma_mode = 1'b1;
   state_t last_state;
 
+  reg   [1:0] i_scan_mode[2];  // 0=normal, 1=equal, 2=low_or_equal, 3=high_or_equal
+  reg         i_scan_match;  // Indica si se encontr?? una coincidencia durante el escaneo
+  reg   [7:0] i_stp;  // Step (incremento de sectores a saltar)
+
+  reg [1:0] image_ready;
+
   assign int_out = int_state[0] | int_state[1];
   assign dout = a0 ? m_data : m_status;
   assign old_state = last_state;
   assign activity_led = (phase == PHASE_EXECUTE);
+  assign prepare = image_ready;
+
+
+
+
 
   always @(posedge clk_sys) begin
 
@@ -222,13 +233,12 @@ typedef enum bit [1:0] {
 
     //per-drive data
     reg [31:0] image_size[2];
-    reg image_ready[2] = '{0, 0};
     reg [7:0] image_tracks[2];
     reg image_sides[2];  //1 side - 0, 2 sides - 1
     reg [1:0] image_wp;
     reg image_trackinfo_dirty[2];
     reg image_edsk[2];  //DSK - 0, EDSK - 1
-    reg [1:0] image_scan_state[2] = '{0, 0};
+    reg [1:0] image_scan_state[2] ;
     reg [1:0] image_density;
     reg [7:0] i_current_track_sectors[2][2] /* synthesis keep */;  //number of sectors on the current track /head/drive
     reg [7:0] i_current_sector_pos[2][2] /* synthesis keep */; //sector where the head currently positioned
@@ -259,7 +269,7 @@ typedef enum bit [1:0] {
     reg [19:0] i_timeout;
     reg [7:0] i_head_timer;
     reg i_rtrack, i_write, i_rw_deleted;
-    reg [7:0] status[4] = '{0, 0, 0, 0};  //st0-3
+    reg [7:0] status[4];  //st0-3
     state_t state;
     state_t i_command;
     reg i_current_drive, i_scan_lock;
@@ -284,11 +294,7 @@ typedef enum bit [1:0] {
     //reg i_mfm;
     reg         i_sk;
 
-    // Variables para los comandos SCAN
-    reg   [1:0] i_scan_mode;  // 0=normal, 1=equal, 2=low_or_equal, 3=high_or_equal
-    reg         i_scan_match;  // Indica si se encontr?? una coincidencia durante el escaneo
-    reg   [7:0] i_stp;  // Step (incremento de sectores a saltar)
-
+   
 
     buff_wait <= 0;
     i_total_sectors = i_current_track_sectors[ds0][hds];
@@ -307,15 +313,6 @@ typedef enum bit [1:0] {
         seek_state[i] <= 0;
         next_weak_sector[i] <= 0;
         i_current_sector_pos[i] <= '{0, 0};
-      end
-      if (old_ready[i] & ~ready[i]) begin
-        int_state[i] <= 1;
-        image_scan_state[i] <= 0;
-        image_ready[i] <= 0;
-        seek_state[i] <= 0;
-        next_weak_sector[i] <= 0;
-        i_current_sector_pos[i] <= '{0, 0};
-        pcn[i] <= 1;
       end
     end
 
@@ -410,7 +407,7 @@ typedef enum bit [1:0] {
       i_scan_lock <= 0;
       i_srt <= 4;
       ndma_mode <= 1'b1;
-      i_scan_mode <= 2'b00;  // Inicializaci??n del modo de escaneo
+      i_scan_mode <= {2'b00,2'b00};  // Inicializacion del modo de escaneo
     end else if (ce) begin
 
       ack <= {ack[4:0], sd_ack[ds0]};
@@ -548,19 +545,19 @@ typedef enum bit [1:0] {
                 8'b000_10001: begin
                   state <= COMMAND_SCAN_EQUAL;
                   last_state <= COMMAND_SCAN_EQUAL;
-                  i_scan_mode <= 2'b01;
+                  i_scan_mode[ds0] <= 2'b01;
                   $display("SCAN_EQUAL command detected, mode set to: %b", 2'b01);
                 end
                 8'b000_11001: begin
                   state <= COMMAND_SCAN_LOW_OR_EQUAL;
                   last_state <= COMMAND_SCAN_LOW_OR_EQUAL;
-                  i_scan_mode <= 2'b10;
+                  i_scan_mode[ds0] <= 2'b10;
                   $display("SCAN_LOW_OR_EQUAL command detected, mode set to: %b", 2'b10);
                 end
                 8'b000_11101: begin
                   state <= COMMAND_SCAN_HIGH_OR_EQUAL;
                   last_state <= COMMAND_SCAN_HIGH_OR_EQUAL;
-                  i_scan_mode <= 2'b11;
+                  i_scan_mode[ds0] <= 2'b11;
                   $display("SCAN_HIGH_OR_EQUAL command detected, mode set to: %b", 2'b11);
                 end
                 8'b000_00111: begin
@@ -806,7 +803,7 @@ typedef enum bit [1:0] {
             i_command <= COMMAND_RW_DATA_EXEC;
             state <= COMMAND_SETUP;
             {i_rtrack, i_write, i_rw_deleted} <= 3'b100;
-            i_scan_mode <= 2'b00;  // Normal mode, no scan
+            i_scan_mode[ds0] <= 2'b00;  // Normal mode, no scan
           end
 
           COMMAND_WRITE_DATA: begin
@@ -814,7 +811,7 @@ typedef enum bit [1:0] {
             i_command <= COMMAND_RW_DATA_EXEC;
             state <= COMMAND_SETUP;
             {i_rtrack, i_write, i_rw_deleted} <= 3'b010;
-            i_scan_mode <= 2'b00;  // Normal mode, no scan
+            i_scan_mode[ds0] <= 2'b00;  // Normal mode, no scan
           end
 
           COMMAND_WRITE_DELETED_DATA: begin
@@ -822,7 +819,7 @@ typedef enum bit [1:0] {
             i_command <= COMMAND_RW_DATA_EXEC;
             state <= COMMAND_SETUP;
             {i_rtrack, i_write, i_rw_deleted} <= 3'b011;
-            i_scan_mode <= 2'b00;  // Normal mode, no scan
+            i_scan_mode[ds0] <= 2'b00;  // Normal mode, no scan
           end
 
           COMMAND_READ_DATA: begin
@@ -830,7 +827,7 @@ typedef enum bit [1:0] {
             i_command <= COMMAND_RW_DATA_EXEC;
             state <= COMMAND_SETUP;
             {i_rtrack, i_write, i_rw_deleted} <= 3'b000;
-            i_scan_mode <= 2'b00;  // Normal mode, no scan
+            i_scan_mode[ds0] <= 2'b00;  // Normal mode, no scan
           end
 
           COMMAND_READ_DELETED_DATA: begin
@@ -838,7 +835,7 @@ typedef enum bit [1:0] {
             i_command <= COMMAND_RW_DATA_EXEC;
             state <= COMMAND_SETUP;
             {i_rtrack, i_write, i_rw_deleted} <= 3'b001;
-            i_scan_mode <= 2'b00;  // Normal mode, no scan
+            i_scan_mode[ds0] <= 2'b00;  // Normal mode, no scan
           end
 
           COMMAND_RW_DATA_EXEC6:
@@ -868,7 +865,7 @@ typedef enum bit [1:0] {
               // 1. Leer el byte del sector (aquí)
               // 2. Presentar el byte al CPU (m_data <= buff_data_in)
               // 3. Luego esperar a que el CPU envíe un byte para comparar
-              if (i_scan_mode != 2'b00) begin
+              if (i_scan_mode[ds0] != 2'b00) begin
                 // Para comandos SCAN: guardar el dato del sector para comparación
                 m_data <= buff_data_in;
                 $display("RW_DATA_EXEC6: SCAN mode, sector data=%h", buff_data_in);
@@ -924,10 +921,10 @@ typedef enum bit [1:0] {
             // Chequear si el CPU está enviando un dato para comparar
             if (~old_wr & wr & a0) begin
               $display("SCAN_COMPARE: SectorData=0x%02x, CPUData=0x%02x, Mode=%b", m_data, din,
-                       i_scan_mode);
+                       i_scan_mode[ds0]);
 
               // Hacer la comparación apropiada según el modo de SCAN
-              case (i_scan_mode)
+              case (i_scan_mode[ds0])
                 2'b01: begin  // SCAN_EQUAL
                   // Solo hay coincidencia si los datos son exactamente iguales
                   if (m_data == din) begin
@@ -1041,7 +1038,7 @@ typedef enum bit [1:0] {
               end
               7: begin
                 // Para comandos SCAN, usar el último parámetro como STP en lugar de DTL
-                if (i_scan_mode != 2'b00) begin
+                if (i_scan_mode[ds0] != 2'b00) begin
                   i_stp <= din & 2'b11;  // Los 2 bits inferiores son el valor STP
                   $display("SCAN command, using STP=%d from input=%h", din & 2'b11, din);
                 end else begin
@@ -1058,7 +1055,7 @@ typedef enum bit [1:0] {
           // Bloque completo COMMAND_RW_DATA_EXEC8
           COMMAND_RW_DATA_EXEC8:
           if (~sd_busy) begin
-            $display("RW_DATA_EXEC8: scan_mode=%b, scan_match=%b", i_scan_mode, i_scan_match);
+            $display("RW_DATA_EXEC8: scan_mode=%b, scan_match=%b", i_scan_mode[ds0], i_scan_match);
 
             if (~i_rtrack & ~(i_sk & (i_rw_deleted ^ i_sector_st2[6])) &
         ((i_sector_st1[5] & i_sector_st2[5]) | (i_rw_deleted ^ i_sector_st2[6]))) begin
@@ -1075,7 +1072,7 @@ typedef enum bit [1:0] {
               m_status[UPD765_MAIN_EXM] <= 0;
 
               // Manejo especial para comandos SCAN
-              if (i_scan_mode != 2'b00) begin
+              if (i_scan_mode[ds0] != 2'b00) begin
                 $display(
                     "Operación SCAN completada en EOT, match=%b, configurando códigos de resultado",
                     i_scan_match);
@@ -1093,7 +1090,7 @@ typedef enum bit [1:0] {
                   // 01 = vacío (no satisfecho)
                   // 10 = satisfecho (SCAN LOW/HIGH)
                   // 11 = satisfecho (SCAN EQUAL)
-                  case (i_scan_mode)
+                  case (i_scan_mode[ds0])
                     2'b01:
                     status[2] <= 8'h10;  // SCAN_EQUAL - bits 2-3 = 11 (scan equal satisfecho)
                     2'b10:
@@ -1127,14 +1124,14 @@ typedef enum bit [1:0] {
               end
 
               // Verificar si encontramos una coincidencia en modo SCAN
-              if (i_scan_mode != 2'b00 && i_scan_match) begin
+              if (i_scan_mode[ds0] != 2'b00 && i_scan_match) begin
                 // Si encontramos una coincidencia en modo SCAN, terminar con códigos de estado apropiados
                 m_status[UPD765_MAIN_EXM] <= 0;
                 status[0] <= 8'h00;  // Terminación normal
                 status[1] <= 8'h00;  // Sin errores
 
                 // Configurar bits de resultado SCAN apropiados en ST2
-                case (i_scan_mode)
+                case (i_scan_mode[ds0])
                   2'b01: begin
                     status[2] <= 8'h10;  // SCAN_EQUAL - bits 2-3 = 11 (scan equal satisfecho)
                     $display("Coincidencia SCAN_EQUAL encontrada, configurando ST2=0x10");
@@ -1158,7 +1155,7 @@ typedef enum bit [1:0] {
 
                 // Incremento normal o por STP para comandos SCAN
                 if (~i_mt | hds | ~image_sides[ds0]) begin
-                  if (i_scan_mode != 2'b00) begin
+                  if (i_scan_mode[ds0] != 2'b00) begin
                     // Para SCAN, incrementar según el valor de STP
                     case (i_stp)
                       2'b00, 2'b01: begin
@@ -1243,7 +1240,7 @@ typedef enum bit [1:0] {
             i_command <= COMMAND_RW_DATA_EXEC;
             state <= COMMAND_SETUP;
             {i_rtrack, i_write, i_rw_deleted} <= 3'b000;  // Similar to READ_DATA
-            i_scan_mode <= 2'b01;  // SCAN_EQUAL mode
+            i_scan_mode[ds0] <= 2'b01;  // SCAN_EQUAL mode
             i_scan_match <= 0;     // Reset match flag
             $display("COMMAND_SCAN_EQUAL: Starting setup with mode=01");
           end
@@ -1253,7 +1250,7 @@ typedef enum bit [1:0] {
             i_command <= COMMAND_RW_DATA_EXEC;
             state <= COMMAND_SETUP;
             {i_rtrack, i_write, i_rw_deleted} <= 3'b000;  // Similar to READ_DATA
-            i_scan_mode <= 2'b10;  // SCAN_LOW_OR_EQUAL mode
+            i_scan_mode [ds0]<= 2'b10;  // SCAN_LOW_OR_EQUAL mode
             i_scan_match <= 0;     // Reset match flag
             $display("COMMAND_SCAN_LOW_OR_EQUAL: Starting setup with mode=10");
           end
@@ -1263,7 +1260,7 @@ typedef enum bit [1:0] {
             i_command <= COMMAND_RW_DATA_EXEC;
             state <= COMMAND_SETUP;
             {i_rtrack, i_write, i_rw_deleted} <= 3'b000;  // Similar to READ_DATA
-            i_scan_mode <= 2'b11;  // SCAN_HIGH_OR_EQUAL mode
+            i_scan_mode [ds0]<= 2'b11;  // SCAN_HIGH_OR_EQUAL mode
             i_scan_match <= 0;     // Reset match flag
             $display("COMMAND_SCAN_HIGH_OR_EQUAL: Starting setup with mode=11");
           end
@@ -1297,7 +1294,7 @@ typedef enum bit [1:0] {
             i_scan_lock  <= 0;
             i_srt        <= 4;
             ndma_mode    <= 1'b1;
-            i_scan_mode  <= 2'b00;  // Initialize scan mode to normal (not SCAN)
+            i_scan_mode[ds0]  <= 2'b00;  // Initialize scan mode to normal (not SCAN)
             i_scan_match <= 0;  // Initialize scan match flag
             i_stp        <= 2'b01;  // Default STP value
           end
@@ -1305,7 +1302,7 @@ typedef enum bit [1:0] {
 
           // Add logs to COMMAND_RW_DATA_EXEC1
           COMMAND_RW_DATA_EXEC1: begin
-            $display("COMMAND_RW_DATA_EXEC1: scan_mode=%b", i_scan_mode);
+            $display("COMMAND_RW_DATA_EXEC1: scan_mode=%b", i_scan_mode[ds0]);
             m_status[UPD765_MAIN_DIO] <= ~i_write;
             if (i_rtrack) i_r <= 1;
             i_bc <= 1;
@@ -1339,7 +1336,8 @@ typedef enum bit [1:0] {
             $display(
                 "COMMAND_RW_DATA_EXEC3: buff_addr=%h, i_current_sector=%d, i_total_sectors=%d, image_ready=%d",
                 buff_addr[7:0], i_current_sector, i_total_sectors, image_ready[ds0]);
-
+                $display("EXEC3: Checking sector %d/%d, current sector info: C=%d, H=%d, R=%d, N=%d",
+                i_current_sector, i_total_sectors, i_sector_c, i_sector_h, i_sector_r, i_sector_n);
             if (buff_addr[7:0] == 8'h14) begin
               if (!image_edsk[ds0]) i_sector_size <= 8'h80 << buff_data_in[2:0];
               buff_addr[7:0] <= 8'h18;  //sector info list
@@ -1403,8 +1401,11 @@ typedef enum bit [1:0] {
           COMMAND_RW_DATA_EXEC4:
           if ((i_rtrack && i_current_sector == i_r) ||
 				(~i_rtrack && i_sector_c == i_c && i_sector_r == i_r && i_sector_h == i_h && (i_sector_n == i_n || !i_n))) begin
+            $display("EXEC4: Looking for C=%d, H=%d, R=%d, N=%d", i_c, i_h, i_r, i_n);
+            $display("EXEC4: Found C=%d, H=%d, R=%d, N=%d", i_sector_c, i_sector_h, i_sector_r, i_sector_n);
             //sector found in the sector info list
             if (i_sk & ~i_rtrack & (i_rw_deleted ^ i_sector_st2[6])) begin
+              $display("EXEC4 to EXEC8:");
               state <= COMMAND_RW_DATA_EXEC8;
             end else begin
               i_bytes_to_read <= i_n ? (8'h80 << (i_n[3] ? 4'h8 : i_n[2:0])) : i_dtl;
@@ -1414,6 +1415,7 @@ typedef enum bit [1:0] {
             end
           end else begin
             //try the next sector in the sectorinfo list
+            $display("EXEC4 Next Sector:");
             if (i_sector_c == i_c) i_bc <= 0;
             i_current_sector <= i_current_sector + 1'd1;
             i_seek_pos <= i_seek_pos + i_sector_size;
@@ -1605,7 +1607,7 @@ typedef enum bit [1:0] {
 
           // Añadir logs de diagnóstico al COMMAND_SETUP_VALIDATION
           COMMAND_SETUP_VALIDATION: begin
-            $display("COMMAND_SETUP_VALIDATION: scan_mode=%b, i_command=%d", i_scan_mode,
+            $display("COMMAND_SETUP_VALIDATION: scan_mode=%b, i_command=%d", i_scan_mode[ds0],
                      i_command);
             $display("Disk conditions: motor=%b, ready=%b, image_ready=%b", motor[ds0], ready[ds0],
                      image_ready[ds0]);
@@ -1630,10 +1632,10 @@ typedef enum bit [1:0] {
               int_state[ds0] <= 1'b1;
               phase <= PHASE_RESPONSE;
             end else begin
-              if (i_scan_mode != 2'b00) begin
+              if (i_scan_mode[ds0] != 2'b00) begin
                 i_scan_match <= 0;  // Reset scan match flag at start of execution
               end
-              $display("Transitioning to execute phase with scan_mode=%b, command=%d", i_scan_mode,
+              $display("Transitioning to execute phase with scan_mode=%b, command=%d", i_scan_mode[ds0],
                        i_command);
               phase <= PHASE_EXECUTE;
               state <= i_command;
@@ -1642,9 +1644,9 @@ typedef enum bit [1:0] {
 
           // Añadir logs al estado COMMAND_RW_DATA_EXEC
           COMMAND_RW_DATA_EXEC: begin
-            $display("COMMAND_RW_DATA_EXEC: scan_mode=%b, write=%b, wp=%b", i_scan_mode, i_write,
+            $display("COMMAND_RW_DATA_EXEC: scan_mode=%b, write=%b, wp=%b", i_scan_mode[ds0], i_write,
                      image_wp[ds0]);
-            if (i_scan_mode != 2'b00) begin
+            if (i_scan_mode[ds0] != 2'b00) begin
               i_write <= 1'b0;
             end
 

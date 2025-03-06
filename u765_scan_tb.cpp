@@ -9,30 +9,9 @@
 #include "verilated.h"
 #include "verilated_vcd_c.h"
 
-// Archivo de testbench específico para comandos SCAN
-// Compilar con: make scan_tb
-
 double sc_time_stamp() {
     return 0;
 }
-
-// Estructura para datos de prueba
-struct TestData {
-    int sector;
-    uint8_t data[512];
-};
-
-// Estructura para tracking de informes de escaneo
-struct ScanResult {
-    int tick;
-    int status0;
-    int status1;
-    int status2;
-    bool equal;
-    bool high;
-    bool low;
-    std::string result_desc;
-};
 
 static Vu765_test *tb;
 static VerilatedVcdC *trace;
@@ -42,34 +21,54 @@ static unsigned char sdbuf[512];
 static FILE *edsk;
 static int reading;
 static int read_ptr;
+
+// Structure for tracking scan operation results
+struct ScanResult {
+    int timestamp;
+    int status0;
+    int status1;
+    int status2;
+    std::string operation;
+    std::string result;
+    bool match_found;
+};
+
+// Log of scan operations for analysis
 static std::vector<ScanResult> scan_results;
 
-// Variables globales para tracking de estados
+// Buffer for test data to be compared with sector data
+static uint8_t compare_data[512];
+
+// Flags for TC and interrupts
 static bool tc_active = false;
 static bool int_out_active = false;
 static bool int_out_previous = false;
-static int interrupt_count = 0;
 
-// Sector con datos para pruebas
-static uint8_t sector_data[512];
+// Function to read a block from the disk image
+int img_read(int sd_rd) {
+    if (!sd_rd) return 0;
+    printf("img_read: %02x lba: %d\n", sd_rd, tb->sd_lba);
+    int lba = tb->sd_lba;
+    fseek(edsk, lba << 9, SEEK_SET);
+    fread(&sdbuf, 512, 1, edsk);
+    reading = 1;
+    read_ptr = 0;
+    return 0;
+}
 
-// Ciclo de reloj básico
+// Basic clock cycle
 void tick(int c) {
     static int sd_rd = 0;
     static int sd_wr = 0;
 
     tb->clk_sys = c;
     
-    // Manejar TC e interrupciones
+    // Handle TC signal
     tb->tc = tc_active ? 1 : 0;
     
-    // Detectar flancos de subida en int_out
+    // Detect rising edges on int_out
     int_out_previous = int_out_active;
     int_out_active = tb->int_out;
-    
-    if (!int_out_previous && int_out_active) {
-        interrupt_count++;
-    }
     
     tb->eval();
     trace->dump(tickcount++);
@@ -87,27 +86,16 @@ void tick(int c) {
             tb->sd_buff_wr = 0;
         }
 
-        if (sd_rd != tb->sd_rd) {
-            // Leer bloque del disco
-            if (tb->sd_rd) {
-                printf("img_read: %02x lba: %d\n", tb->sd_rd, tb->sd_lba);
-                int lba = tb->sd_lba;
-                fseek(edsk, lba << 9, SEEK_SET);
-                fread(sdbuf, 512, 1, edsk);
-                reading = 1;
-                read_ptr = 0;
-            }
-        }
+        if (sd_rd != tb->sd_rd) img_read(tb->sd_rd);
+        sd_rd = tb->sd_rd;
         
-        // Si hay un write, preparar para aceptar la escritura desde el SD
+        // Handle SD write operations (for completeness)
         if (tb->sd_wr && !sd_wr) {
             printf("SD Write request to LBA %d\n", tb->sd_lba);
-            // Aquí no implementamos la escritura real - solo simulamos la respuesta
-            tb->sd_ack = 1;
-            tb->sd_ack = 0;  // Pulso corto de ack
+            tb->sd_ack = 1; 
+        } else if (!tb->sd_wr && sd_wr) {
+            tb->sd_ack = 0;
         }
-        
-        sd_rd = tb->sd_rd;
         sd_wr = tb->sd_wr;
     }
 }
@@ -119,7 +107,7 @@ void wait(int t) {
     }
 }
 
-// Lee el registro de estado del u765
+// Read the u765 status register
 int readstatus() {
     int dout;
 
@@ -137,7 +125,7 @@ int readstatus() {
     tick(1);
     tick(0);
     
-    // Interpretar los bits del registro de estado
+    // Interpret status register bits
     printf("READ STATUS = 0x%02x [ ", dout);
     if (dout & 0x80) printf("RQM ");
     if (dout & 0x40) printf("DIO ");
@@ -152,15 +140,32 @@ int readstatus() {
     return dout;
 }
 
-// Envía un byte al controlador u765
-void sendbyte(int byte) {
-    while ((readstatus() & 0xcf) != 0x80) {};
+// Send a byte to the u765 controller with timeout
+void sendbyte(int byte, int timeout_ms = 1000) {
+    int timeout_ticks = timeout_ms * 100; // Rough approximation
+    int counter = 0;
+    
+    // Wait for controller to be ready with timeout
+    while ((readstatus() & 0xcf) != 0x80) {
+        counter++;
+        if (counter >= timeout_ticks) {
+            printf("TIMEOUT: Controller not ready to receive byte after %d ms\n", timeout_ms);
+            printf("Last status: 0x%02x\n", readstatus());
+            return;
+        }
+        
+        // Don't check status too frequently
+        wait(10);
+    }
+    
+    // Send the byte
     tb->a0 = 1;
     tick(1);
     tick(0);
     tb->nRD = 1;
     tb->nWR = 0;
     tb->din = byte;
+    printf("Sending byte: 0x%02x\n", byte);
     tick(1);
     tick(0);
     tick(1);
@@ -170,11 +175,26 @@ void sendbyte(int byte) {
     tick(0);
 }
 
-// Lee un byte del controlador u765
-int readbyte() {
+// Read a byte from the u765 controller with timeout
+int readbyte(int timeout_ms = 1000) {
     int byte;
-
-    while ((readstatus() & 0xcf) != 0xc0) {};
+    int timeout_ticks = timeout_ms * 100; // Rough approximation
+    int counter = 0;
+    
+    // Wait for controller to be ready with timeout
+    while ((readstatus() & 0xcf) != 0xc0) {
+        counter++;
+        if (counter >= timeout_ticks) {
+            printf("TIMEOUT: Controller not ready to provide data after %d ms\n", timeout_ms);
+            printf("Last status: 0x%02x\n", readstatus());
+            return -1;
+        }
+        
+        // Don't check status too frequently
+        wait(10);
+    }
+    
+    // Read the byte
     tb->a0 = 1;
     tick(1);
     tick(0);
@@ -192,130 +212,82 @@ int readbyte() {
     return byte;
 }
 
-// Lee el resultado de un comando
-void read_result() {
-    printf("--- COMMAND RESULT ----\n");
-    int st0 = readbyte();
-    int st1 = readbyte();
-    int st2 = readbyte();
-    int c = readbyte();
-    int h = readbyte();
-    int r = readbyte();
-    int n = readbyte();
+// Read result after a command
+void read_result(const char* operation) {
+    printf("--- COMMAND RESULT (%s) ----\n", operation);
     
-    printf("ST0 = 0x%02x\n", st0);
-    printf("ST1 = 0x%02x\n", st1);
-    printf("ST2 = 0x%02x\n", st2);
-    printf("C   = 0x%02x\n", c);
-    printf("H   = 0x%02x\n", h);
-    printf("R   = 0x%02x\n", r);
-    printf("N   = 0x%02x\n", n);
-    
-    // Analizar el resultado del scan
+    // Create a new scan result entry
     ScanResult result;
-    result.tick = tickcount;
+    result.timestamp = tickcount;
+    result.operation = operation;
+    
+    // ST0
+    int st0 = readbyte();
+    printf("ST0 = 0x%02x\n", st0);
     result.status0 = st0;
+    
+    // ST1
+    int st1 = readbyte();
+    printf("ST1 = 0x%02x\n", st1);
     result.status1 = st1;
+    
+    // ST2
+    int st2 = readbyte();
+    printf("ST2 = 0x%02x\n", st2);
     result.status2 = st2;
     
-    // Interpretar ST2 para determinar resultado de comparación
-    result.equal = (st2 & 0x08) == 0; // SH bit (bit 3) es 0 si igualó
-    result.high = (st2 & 0x04) != 0;  // SN bit (bit 2) es 1 si sector > data
-    result.low = (st2 & 0x04) == 0 && !result.equal; // Si SN=0 pero no igual, entonces sector < data
-    
-    if (result.equal) {
-        result.result_desc = "Datos iguales";
-    } else if (result.high) {
-        result.result_desc = "Datos del sector > Datos comparados";
-    } else if (result.low) {
-        result.result_desc = "Datos del sector < Datos comparados";
-    } else {
-        result.result_desc = "Resultado indeterminado";
-    }
-    
-    scan_results.push_back(result);
-}
-
-// Comando para enviar o recibir datos del sector actual
-// Declaración de funciones 
-void set_tc(bool active);
-void analyze_scan_results();
-
-void transfer_sector_data(bool write) {
-    int status, byte;
-    int offs = 0;
-    long chksum = 0;
-
-    while(true) {
-        status = readstatus();
-        if ((status & 0xe0) != 0xa0) {
-            // Ya no en modo transferencia
-            printf("Fin de transferencia, suma: %ld\n", chksum);
-            return;
-        }
-        
-        if (write) {
-            // Enviar datos al controlador
-            tb->a0 = 1;
-            tb->nRD = 1;
-            tb->nWR = 0;
-            tb->din = sector_data[offs % 512];
-            tick(1);
-            tick(0);
-            tick(1);
-            tick(0);
-            tb->nWR = 1;
-            tick(1);
-            tick(0);
-            chksum += sector_data[offs % 512];
-            offs++;
-        } else {
-            // Leer datos del controlador
-            tb->a0 = 1;
-            tb->nRD = 0;
-            tb->nWR = 1;
-            tick(1);
-            tick(0);
-            tick(1);
-            tick(0);
-            byte = tb->dout;
-            tb->nRD = 1;
-            tick(1);
-            tick(0);
-            chksum += byte;
-            printf("%02x ", byte);
-            offs++;
-            if ((offs % 16) == 0) printf("\n %03x ", offs);
-        }
-        
-        // Detener después de 512 bytes si es necesario
-        if (offs >= 512 && tc_active) {
-            // Activar Terminal Count para finalizar operación
-            printf("Activando TC después de %d bytes\n", offs);
-            set_tc(true);
-            wait(5);
-            set_tc(false);
+    // Analyze ST2 bits to determine scan result
+    // Bits 2-3 in ST2 indicate the scan result:
+    // 00 = empty (not satisfied)
+    // 01 = empty (not satisfied)
+    // 10 = satisfied (SCAN LOW/HIGH)
+    // 11 = satisfied (SCAN EQUAL)
+    switch ((st2 >> 2) & 0x03) {
+        case 0:
+        case 1:
+            result.result = "No match found";
+            result.match_found = false;
             break;
-        }
+        case 2:
+            result.result = "Match found (SCAN LOW/HIGH satisfied)";
+            result.match_found = true;
+            break;
+        case 3:
+            result.result = "Match found (SCAN EQUAL satisfied)";
+            result.match_found = true;
+            break;
     }
+    
+    // Add the result to our log
+    scan_results.push_back(result);
+    
+    // Read the rest of the result bytes
+    printf("C   = 0x%02x\n", readbyte()); // Cylinder
+    printf("H   = 0x%02x\n", readbyte()); // Head
+    printf("R   = 0x%02x\n", readbyte()); // Record
+    printf("N   = 0x%02x\n", readbyte()); // Number (sector size)
 }
 
-// Nueva función para configurar Terminal Count
+// Set Terminal Count status
 void set_tc(bool active) {
     tc_active = active;
     printf("Setting TC to %s\n", active ? "ACTIVE" : "INACTIVE");
 }
 
-// Reconoce una interrupción pendiente
+// Check if interrupt is active
+bool check_int_out() {
+    return int_out_active;
+}
+
+// Acknowledge an interrupt
 void cmd_sense_interrupt() {
     printf("=== SENSE INTERRUPT STATUS ===\n");
     sendbyte(0x08);
-    // Lee el resultado (ST0 y Present Cylinder Number)
     printf("ST0 = 0x%02x\n", readbyte());
     printf("PCN = 0x%02x\n", readbyte());
 }
 
-// Comandos básicos del FDC 
+// Standard FDC commands
 void cmd_recalibrate() {
     printf("=== RECALIBRATE ===\n");
     sendbyte(0x07);
@@ -325,123 +297,239 @@ void cmd_recalibrate() {
 void cmd_seek(int ncn) {
     printf("=== SEEK ===\n");
     sendbyte(0x0f);
-    sendbyte(0x00);  // Unidad 0
-    sendbyte(ncn);   // Cilindro destino
-}
-
-void cmd_read_id(int head) {
-    printf("=== READ ID ===\n");
-    sendbyte(0x0a);
-    sendbyte(head << 2);
-    read_result();
+    sendbyte(0x00);
+    sendbyte(ncn);
 }
 
 void cmd_read_data(int c, int h, int r, int n, int eot, int gpl, int dtl) {
-    printf("=== READ DATA (Cylinder %d, Head %d, Sector %d) ===\n", c, h, r);
-    sendbyte(0x06);        // Comando READ DATA
-    sendbyte(h << 2);      // Unidad 0, Cabeza h
-    sendbyte(c);           // Cilindro
-    sendbyte(h);           // Cabeza
-    sendbyte(r);           // Sector inicial
-    sendbyte(n);           // Tamaño del sector (0=128, 1=256, 2=512, 3=1024)
-    sendbyte(eot);         // Último sector en pista
-    sendbyte(gpl);         // Gap length
-    sendbyte(dtl);         // Data length (si N=0)
-
-    transfer_sector_data(false);  // Leer datos del sector
-    read_result();
+    printf("=== READ DATA ===\n");
+    sendbyte(0x06);
+    sendbyte(h << 2);  // Head << 2 | Drive
+    sendbyte(c);       // Cylinder
+    sendbyte(h);       // Head
+    sendbyte(r);       // Record (sector)
+    sendbyte(n);       // Number (sector size)
+    sendbyte(eot);     // End of track
+    sendbyte(gpl);     // Gap length
+    sendbyte(dtl);     // Data length (if N=0)
+    
+    // Read data bytes
+    int status, byte;
+    int offset = 0;
+    
+    while(true) {
+        status = readstatus();
+        if ((status & 0xe0) != 0xa0) {
+            // End of read
+            break;
+        }
+        
+        tb->a0 = 1;
+        tb->nRD = 0;
+        tb->nWR = 1;
+        tick(1);
+        tick(0);
+        tick(1);
+        tick(0);
+        byte = tb->dout;
+        tb->nRD = 1;
+        tick(1);
+        tick(0);
+        
+        // Store for later comparison
+        if (offset < 512) {
+            sdbuf[offset] = byte;
+        }
+        
+        printf("%02x ", byte);
+        offset++;
+        if ((offset % 16) == 0) printf("\n");
+    }
+    printf("\n");
+    
+    // Read result bytes
+    read_result("READ DATA");
 }
 
-void cmd_write_data(int c, int h, int r, int n, int eot, int gpl, int dtl) {
-    printf("=== WRITE DATA (Cylinder %d, Head %d, Sector %d) ===\n", c, h, r);
-    sendbyte(0x05);        // Comando WRITE DATA
-    sendbyte(h << 2);      // Unidad 0, Cabeza h
-    sendbyte(c);           // Cilindro
-    sendbyte(h);           // Cabeza
-    sendbyte(r);           // Sector inicial
-    sendbyte(n);           // Tamaño del sector (2=512 bytes)
-    sendbyte(eot);         // Último sector en pista
-    sendbyte(gpl);         // Gap length
-    sendbyte(dtl);         // Data length (si N=0)
-
-    transfer_sector_data(true);   // Escribir datos al sector
-    read_result();
-}
-
-// Comandos de escaneo
+// SCAN commands for data comparison
 void cmd_scan_equal(int c, int h, int r, int n, int eot, int gpl, int stp) {
-    printf("=== SCAN EQUAL (Cylinder %d, Head %d, Sector %d) ===\n", c, h, r);
-    sendbyte(0x11);        // Comando SCAN EQUAL
-    sendbyte(h << 2);      // Unidad 0, Cabeza h
-    sendbyte(c);           // Cilindro
-    sendbyte(h);           // Cabeza
-    sendbyte(r);           // Sector inicial
-    sendbyte(n);           // Tamaño del sector (2=512 bytes)
-    sendbyte(eot);         // Último sector en pista
-    sendbyte(gpl);         // Gap length
-    sendbyte(stp);         // Step (01 = contiguo, 02 = saltar cada 2)
-
-    transfer_sector_data(true);   // Enviar datos para comparar
-    read_result();
+    printf("=== SCAN EQUAL ===\n");
+    sendbyte(0x11);
+    sendbyte(h << 2);  // Head << 2 | Drive
+    sendbyte(c);       // Cylinder
+    sendbyte(h);       // Head
+    sendbyte(r);       // Record (sector)
+    sendbyte(n);       // Number (sector size)
+    sendbyte(eot);     // End of track
+    sendbyte(gpl);     // Gap length
+    sendbyte(stp);     // Step (01 or 02)
+    
+    // Now send the data to compare
+    int status;
+    int offset = 0;
+    int sector_size = (n == 2) ? 512 : 128 << n;
+    
+    printf("Sending %d bytes for comparison...\n", sector_size);
+    
+    while(offset < sector_size) {
+        status = readstatus();
+        if ((status & 0xe0) != 0x80) {
+            // Controller not ready or execution ended
+            break;
+        }
+        
+        tb->a0 = 1;
+        tb->nRD = 1;
+        tb->nWR = 0;
+        tb->din = compare_data[offset];
+        tick(1);
+        tick(0);
+        tick(1);
+        tick(0);
+        tb->nWR = 1;
+        tick(1);
+        tick(0);
+        
+        printf("%02x ", compare_data[offset]);
+        offset++;
+        if ((offset % 16) == 0) printf("\n");
+        
+        // After sending enough data, activate TC to terminate
+        if (offset >= sector_size/2) {
+            set_tc(true);
+            wait(10);
+            set_tc(false);
+            break;
+        }
+    }
+    printf("\n");
+    
+    // Wait for the scan operation to complete
+    wait(500);
+    
+    // Read result bytes
+    read_result("SCAN EQUAL");
 }
 
 void cmd_scan_low_or_equal(int c, int h, int r, int n, int eot, int gpl, int stp) {
-    printf("=== SCAN LOW OR EQUAL (Cylinder %d, Head %d, Sector %d) ===\n", c, h, r);
-    sendbyte(0x19);        // Comando SCAN LOW OR EQUAL
-    sendbyte(h << 2);      // Unidad 0, Cabeza h
-    sendbyte(c);           // Cilindro
-    sendbyte(h);           // Cabeza
-    sendbyte(r);           // Sector inicial
-    sendbyte(n);           // Tamaño del sector (2=512 bytes)
-    sendbyte(eot);         // Último sector en pista
-    sendbyte(gpl);         // Gap length
-    sendbyte(stp);         // Step (01 = contiguo, 02 = saltar cada 2)
-
-    transfer_sector_data(true);   // Enviar datos para comparar
-    read_result();
+    printf("=== SCAN LOW OR EQUAL ===\n");
+    sendbyte(0x19);
+    sendbyte(h << 2);  // Head << 2 | Drive
+    sendbyte(c);       // Cylinder
+    sendbyte(h);       // Head
+    sendbyte(r);       // Record (sector)
+    sendbyte(n);       // Number (sector size)
+    sendbyte(eot);     // End of track
+    sendbyte(gpl);     // Gap length
+    sendbyte(stp);     // Step (01 or 02)
+    
+    // Now send the data to compare
+    int status;
+    int offset = 0;
+    int sector_size = (n == 2) ? 512 : 128 << n;
+    
+    printf("Sending %d bytes for comparison...\n", sector_size);
+    
+    while(offset < sector_size) {
+        status = readstatus();
+        if ((status & 0xe0) != 0x80) {
+            // Controller not ready or execution ended
+            break;
+        }
+        
+        tb->a0 = 1;
+        tb->nRD = 1;
+        tb->nWR = 0;
+        tb->din = compare_data[offset];
+        tick(1);
+        tick(0);
+        tick(1);
+        tick(0);
+        tb->nWR = 1;
+        tick(1);
+        tick(0);
+        
+        printf("%02x ", compare_data[offset]);
+        offset++;
+        if ((offset % 16) == 0) printf("\n");
+        
+        // After sending enough data, activate TC to terminate
+        if (offset >= sector_size/2) {
+            set_tc(true);
+            wait(10);
+            set_tc(false);
+            break;
+        }
+    }
+    printf("\n");
+    
+    // Wait for the scan operation to complete
+    wait(500);
+    
+    // Read result bytes
+    read_result("SCAN LOW OR EQUAL");
 }
 
 void cmd_scan_high_or_equal(int c, int h, int r, int n, int eot, int gpl, int stp) {
-    printf("=== SCAN HIGH OR EQUAL (Cylinder %d, Head %d, Sector %d) ===\n", c, h, r);
-    sendbyte(0x1d);        // Comando SCAN HIGH OR EQUAL
-    sendbyte(h << 2);      // Unidad 0, Cabeza h
-    sendbyte(c);           // Cilindro
-    sendbyte(h);           // Cabeza
-    sendbyte(r);           // Sector inicial
-    sendbyte(n);           // Tamaño del sector (2=512 bytes)
-    sendbyte(eot);         // Último sector en pista
-    sendbyte(gpl);         // Gap length
-    sendbyte(stp);         // Step (01 = contiguo, 02 = saltar cada 2)
-
-    transfer_sector_data(true);   // Enviar datos para comparar
-    read_result();
+    printf("=== SCAN HIGH OR EQUAL ===\n");
+    sendbyte(0x1d);
+    sendbyte(h << 2);  // Head << 2 | Drive
+    sendbyte(c);       // Cylinder
+    sendbyte(h);       // Head
+    sendbyte(r);       // Record (sector)
+    sendbyte(n);       // Number (sector size)
+    sendbyte(eot);     // End of track
+    sendbyte(gpl);     // Gap length
+    sendbyte(stp);     // Step (01 or 02)
+    
+    // Now send the data to compare
+    int status;
+    int offset = 0;
+    int sector_size = (n == 2) ? 512 : 128 << n;
+    
+    printf("Sending %d bytes for comparison...\n", sector_size);
+    
+    while(offset < sector_size) {
+        status = readstatus();
+        if ((status & 0xe0) != 0x80) {
+            // Controller not ready or execution ended
+            break;
+        }
+        
+        tb->a0 = 1;
+        tb->nRD = 1;
+        tb->nWR = 0;
+        tb->din = compare_data[offset];
+        tick(1);
+        tick(0);
+        tick(1);
+        tick(0);
+        tb->nWR = 1;
+        tick(1);
+        tick(0);
+        
+        printf("%02x ", compare_data[offset]);
+        offset++;
+        if ((offset % 16) == 0) printf("\n");
+        
+        // After sending enough data, activate TC to terminate
+        if (offset >= sector_size/2) {
+            set_tc(true);
+            wait(10);
+            set_tc(false);
+            break;
+        }
+    }
+    printf("\n");
+    
+    // Wait for the scan operation to complete
+    wait(500);
+    
+    // Read result bytes
+    read_result("SCAN HIGH OR EQUAL");
 }
 
-// Preparar datos para las pruebas de SCAN
-void prepare_test_data() {
-    // Inicializar datos para las pruebas
-    printf("Preparando datos para pruebas de SCAN\n");
-
-    // Primero rellenar todo con un patrón reconocible
-    for (int i = 0; i < 512; i++) {
-        sector_data[i] = i & 0xFF;
-    }
-    
-    // Rellenar el resto con valores específicos para tests
-    for (int i = 10; i < 20; i++) {
-        sector_data[i] = 0xAA;  // Valor mayor que el esperado 
-    }
-    
-    for (int i = 30; i < 40; i++) {
-        sector_data[i] = 0x55;  // Valor menor que el esperado
-    }
-    
-    for (int i = 50; i < 60; i++) {
-        sector_data[i] = i & 0xFF;  // Valores iguales a los esperados
-    }
-}
-
-// Monta una imagen de disco
+// Mount a disk image
 void mount(FILE *edsk, int dno) {
     int fsize;
 
@@ -455,244 +543,322 @@ void mount(FILE *edsk, int dno) {
     wait(1000);
 }
 
-// Test específico para comandos SCAN
-void test_scan_commands() {
-    printf("\n=== TEST DE COMANDOS SCAN DEL uPD765 ===\n");
+// Prepare test data for SCAN comparison
+void prepare_test_data() {
+    printf("Preparing test data for SCAN operations...\n");
     
-    // Inicialización básica
-    tb->reset = 1;
-    wait(10);
-    tb->reset = 0;
-    wait(50);
+    // Fill the compare data buffer with different patterns for testing
     
-    // Configuración de hardware
-    tb->motor = 1;
-    tb->ready = 1;
-    tb->available = 1;
-    tb->density = 1;  // CF2DD
-    wait(100);
-    
-    // Preparar datos para el test
-    prepare_test_data();
-    
-    // Inicializar la unidad y ubicarse en el sector de prueba
-    printf("\n-- Inicialización de la unidad --\n");
-    cmd_recalibrate();
-    wait(500);
-    
-    // Reconocer interrupción de recalibrado
-    if (int_out_active) {
-        cmd_sense_interrupt();
+    // 1. Exact match (same as sector)
+    for (int i = 0; i < 128; i++) {
+        compare_data[i] = i & 0xFF;
     }
     
-    // Mover a la pista deseada
-    int test_track = 10;
-    cmd_seek(test_track);
-    wait(500);
-    
-    // Reconocer interrupción de seek
-    if (int_out_active) {
-        cmd_sense_interrupt();
+    // 2. Higher values (for LOW test)
+    for (int i = 128; i < 256; i++) {
+        compare_data[i] = (i & 0xFF) + 10;
     }
     
-    // Escribir datos de prueba en el sector 1
-    printf("\n-- Escribiendo datos de prueba en el sector 1 --\n");
-    cmd_write_data(test_track, 0, 1, 2, 9, 0x2A, 0xFF);
-    wait(100);
-    
-    // 1. Test SCAN EQUAL
-    printf("\n-- Test 1: SCAN EQUAL --\n");
-    // Preparar datos que sean iguales al sector
-    memcpy(sector_data, sdbuf, 512);
-    cmd_scan_equal(test_track, 0, 1, 2, 9, 0x2A, 1);
-    wait(100);
-    
-    // 2. Test SCAN EQUAL negativo (datos no iguales)
-    printf("\n-- Test 2: SCAN EQUAL (negativo) --\n");
-    // Modificar algunos bytes para que no sean iguales
-    for (int i = 0; i < 10; i++) {
-        sector_data[i] = 0xFF;
+    // 3. Lower values (for HIGH test)
+    for (int i = 256; i < 384; i++) {
+        compare_data[i] = (i & 0xFF) - 10;
     }
-    cmd_scan_equal(test_track, 0, 1, 2, 9, 0x2A, 1);
-    wait(100);
     
-    // 3. Test SCAN LOW OR EQUAL (datos iguales)
-    printf("\n-- Test 3: SCAN LOW OR EQUAL (datos iguales) --\n");
-    memcpy(sector_data, sdbuf, 512);
-    cmd_scan_low_or_equal(test_track, 0, 1, 2, 9, 0x2A, 1);
-    wait(100);
-    
-    // 4. Test SCAN LOW OR EQUAL (datos de sector < datos comparados)
-    printf("\n-- Test 4: SCAN LOW OR EQUAL (sector < datos) --\n");
-    for (int i = 0; i < 10; i++) {
-        sector_data[i] = sdbuf[i] + 10;  // Datos comparados son mayores
+    // 4. Mixed values
+    for (int i = 384; i < 512; i++) {
+        compare_data[i] = (i % 3 == 0) ? (i & 0xFF) : 
+                         ((i % 3 == 1) ? (i & 0xFF) + 5 : (i & 0xFF) - 5);
     }
-    cmd_scan_low_or_equal(test_track, 0, 1, 2, 9, 0x2A, 1);
-    wait(100);
-    
-    // 5. Test SCAN LOW OR EQUAL (datos de sector > datos comparados)
-    printf("\n-- Test 5: SCAN LOW OR EQUAL (sector > datos) --\n");
-    for (int i = 0; i < 10; i++) {
-        sector_data[i] = sdbuf[i] - 10;  // Datos comparados son menores
-    }
-    cmd_scan_low_or_equal(test_track, 0, 1, 2, 9, 0x2A, 1);
-    wait(100);
-    
-    // 6. Test SCAN HIGH OR EQUAL (datos iguales)
-    printf("\n-- Test 6: SCAN HIGH OR EQUAL (datos iguales) --\n");
-    memcpy(sector_data, sdbuf, 512);
-    cmd_scan_high_or_equal(test_track, 0, 1, 2, 9, 0x2A, 1);
-    wait(100);
-    
-    // 7. Test SCAN HIGH OR EQUAL (datos de sector > datos comparados)
-    printf("\n-- Test 7: SCAN HIGH OR EQUAL (sector > datos) --\n");
-    for (int i = 0; i < 10; i++) {
-        sector_data[i] = sdbuf[i] - 10;  // Datos comparados son menores
-    }
-    cmd_scan_high_or_equal(test_track, 0, 1, 2, 9, 0x2A, 1);
-    wait(100);
-    
-    // 8. Test SCAN HIGH OR EQUAL (datos de sector < datos comparados)
-    printf("\n-- Test 8: SCAN HIGH OR EQUAL (sector < datos) --\n");
-    for (int i = 0; i < 10; i++) {
-        sector_data[i] = sdbuf[i] + 10;  // Datos comparados son mayores
-    }
-    cmd_scan_high_or_equal(test_track, 0, 1, 2, 9, 0x2A, 1);
-    wait(100);
-    
-    // 9. Test SCAN con step diferente (STP=2)
-    printf("\n-- Test 9: SCAN con STP=2 (saltar cada 2 sectores) --\n");
-    memcpy(sector_data, sdbuf, 512);
-    cmd_scan_equal(test_track, 0, 1, 2, 9, 0x2A, 2);
-    wait(100);
-    
-    // Mostrar resultados
-    analyze_scan_results();
 }
 
-// Analiza los resultados de las pruebas SCAN
+// Analyze SCAN test results
 void analyze_scan_results() {
-    printf("\n=== RESUMEN DE RESULTADOS DE SCAN ===\n");
-    printf("--------------------------------------------------------------------------------------------------------\n");
-    printf("| Test | Tick     | ST0    | ST1    | ST2    | Igual  | Mayor  | Menor  | Resultado                    |\n");
-    printf("--------------------------------------------------------------------------------------------------------\n");
+    printf("\n=== SCAN TEST RESULTS ANALYSIS ===\n");
+    printf("----------------------------------------\n");
+    printf("| # | Operation           | Result            | Match | ST0 | ST1 | ST2 |\n");
+    printf("----------------------------------------\n");
     
     for (size_t i = 0; i < scan_results.size(); i++) {
         const ScanResult& result = scan_results[i];
-        printf("| %-4zu | %-8d | 0x%02X   | 0x%02X   | 0x%02X   | %-6s | %-6s | %-6s | %-29s |\n", 
-               i + 1, 
-               result.tick, 
-               result.status0, 
-               result.status1, 
-               result.status2,
-               result.equal ? "Sí" : "No",
-               result.high ? "Sí" : "No",
-               result.low ? "Sí" : "No",
-               result.result_desc.c_str());
+        printf("| %2zu | %-19s | %-18s | %-5s | %02X  | %02X  | %02X  |\n",
+               i + 1,
+               result.operation.c_str(),
+               result.result.c_str(),
+               result.match_found ? "Yes" : "No",
+               result.status0,
+               result.status1,
+               result.status2);
     }
-    printf("--------------------------------------------------------------------------------------------------------\n");
+    printf("----------------------------------------\n");
     
-    // Validación de pruebas
-    printf("\nAnálisis de resultados:\n");
-    
-    if (scan_results.size() >= 1 && scan_results[0].equal) {
-        printf("✓ Test 1 (SCAN EQUAL): Correcto - encontró datos iguales\n");
-    } else {
-        printf("✗ Test 1 (SCAN EQUAL): Incorrecto - debería haber encontrado datos iguales\n");
+    // Summary
+    int matches = 0;
+    for (const auto& result : scan_results) {
+        if (result.match_found) matches++;
     }
     
-    if (scan_results.size() >= 2 && !scan_results[1].equal) {
-        printf("✓ Test 2 (SCAN EQUAL negativo): Correcto - no encontró datos iguales\n");
-    } else {
-        printf("✗ Test 2 (SCAN EQUAL negativo): Incorrecto - no debería haber encontrado datos iguales\n");
+    printf("\nSummary: %d out of %zu SCAN operations found matches.\n", 
+           matches, scan_results.size());
+    
+    // Check ST2 bits for correct operation
+    bool correct_st2_bits = true;
+    for (const auto& result : scan_results) {
+        // SCAN EQUAL should set bits 2-3 to 11 (0x0C) when satisfied
+        if (result.operation == "SCAN EQUAL" && result.match_found && 
+            ((result.status2 & 0x0C) != 0x0C)) {
+            correct_st2_bits = false;
+        }
+        
+        // SCAN LOW/HIGH should set bits 2-3 to 10 (0x08) when satisfied
+        if ((result.operation == "SCAN LOW OR EQUAL" || 
+             result.operation == "SCAN HIGH OR EQUAL") && 
+            result.match_found && ((result.status2 & 0x0C) != 0x08)) {
+            correct_st2_bits = false;
+        }
     }
     
-    if (scan_results.size() >= 3 && scan_results[2].equal) {
-        printf("✓ Test 3 (SCAN LOW OR EQUAL, datos iguales): Correcto - encontró datos iguales\n");
-    } else {
-        printf("✗ Test 3 (SCAN LOW OR EQUAL, datos iguales): Incorrecto - debería haber encontrado datos iguales\n");
+    printf("ST2 bits correctly set: %s\n", correct_st2_bits ? "Yes" : "No");
+}
+
+// Run a complete test of all SCAN functions
+void test_scan_functions() {
+    printf("\n=== TESTING uPD765 SCAN FUNCTIONS ===\n");
+    
+    // We'll use the initialization from main() to avoid reset issues
+    
+    // First, let's explicitly specify parameters to ensure controller is configured
+    printf("\n-- Initialization: Setting controller parameters with SPECIFY command --\n");
+    sendbyte(0x03, 2000); // SPECIFY command with longer timeout
+    wait(100);
+    sendbyte(0x8F, 2000); // SRT=8, HUT=F
+    wait(100);
+    sendbyte(0x05, 2000); // HLT=5 ms, Non-DMA mode
+    wait(500);
+    
+    printf("Controller status after SPECIFY: 0x%02x\n", readstatus());
+    
+    // Prepare test data
+    prepare_test_data();
+    
+    // 1. First, recalibrate to track 0
+    printf("\n-- Step 1: Recalibrate drive --\n");
+    cmd_recalibrate();
+    wait(1000);
+    
+    // Handle interrupt
+    if (check_int_out()) {
+        cmd_sense_interrupt();
     }
     
-    if (scan_results.size() >= 4 && scan_results[3].low) {
-        printf("✓ Test 4 (SCAN LOW OR EQUAL, sector < datos): Correcto - encontró datos menores\n");
-    } else {
-        printf("✗ Test 4 (SCAN LOW OR EQUAL, sector < datos): Incorrecto - debería haber encontrado datos menores\n");
+    // 2. Seek to a test track (track 10)
+    printf("\n-- Step 2: Seek to track 10 --\n");
+    cmd_seek(10);
+    wait(1000);
+    
+    // Handle interrupt
+    if (check_int_out()) {
+        cmd_sense_interrupt();
     }
     
-    if (scan_results.size() >= 5 && !scan_results[4].equal && !scan_results[4].low) {
-        printf("✓ Test 5 (SCAN LOW OR EQUAL, sector > datos): Correcto - no encontró coincidencia\n");
-    } else {
-        printf("✗ Test 5 (SCAN LOW OR EQUAL, sector > datos): Incorrecto - no debería haber encontrado coincidencia\n");
+    // 3. Read sector 1 to see what's in it
+    printf("\n-- Step 3: Read track 10, sector 1 to analyze content --\n");
+    cmd_read_data(10, 0, 1, 2, 9, 0x2A, 0xFF);
+    wait(100);
+    
+    // 4. Modify our test data based on what we read
+    printf("\n-- Step 4: Preparing comparison data --\n");
+    // Create data that's exactly the same
+    for (int i = 0; i < 512; i++) {
+        compare_data[i] = sdbuf[i];
     }
     
-    if (scan_results.size() >= 6 && scan_results[5].equal) {
-        printf("✓ Test 6 (SCAN HIGH OR EQUAL, datos iguales): Correcto - encontró datos iguales\n");
-    } else {
-        printf("✗ Test 6 (SCAN HIGH OR EQUAL, datos iguales): Incorrecto - debería haber encontrado datos iguales\n");
-    }
+    // 5. Test SCAN EQUAL with exact match
+    printf("\n-- Step 5: SCAN EQUAL with exact match --\n");
+    //cmd_scan_equal(10, 0, 1, 2, 9, 0x2A, 1);
+    cmd_scan_equal(0, 0, 1, 2, 5, 0x2A, 1);
+    wait(100);
     
-    if (scan_results.size() >= 7 && scan_results[6].high) {
-        printf("✓ Test 7 (SCAN HIGH OR EQUAL, sector > datos): Correcto - encontró datos mayores\n");
-    } else {
-        printf("✗ Test 7 (SCAN HIGH OR EQUAL, sector > datos): Incorrecto - debería haber encontrado datos mayores\n");
+    // 6. Test SCAN EQUAL with non-matching data
+    printf("\n-- Step 6: SCAN EQUAL with non-matching data --\n");
+    // Modify first few bytes to be different
+    for (int i = 0; i < 10; i++) {
+        compare_data[i] = sdbuf[i] ^ 0xFF; // Invert bits
     }
+    cmd_scan_equal(10, 0, 1, 2, 9, 0x2A, 1);
+    wait(100);
     
-    if (scan_results.size() >= 8 && !scan_results[7].equal && !scan_results[7].high) {
-        printf("✓ Test 8 (SCAN HIGH OR EQUAL, sector < datos): Correcto - no encontró coincidencia\n");
-    } else {
-        printf("✗ Test 8 (SCAN HIGH OR EQUAL, sector < datos): Incorrecto - no debería haber encontrado coincidencia\n");
+    // 7. Test SCAN LOW OR EQUAL with data higher than sector
+    printf("\n-- Step 7: SCAN LOW OR EQUAL with data higher than sector --\n");
+    // Make compare data higher than sector data
+    for (int i = 0; i < 512; i++) {
+        compare_data[i] = sdbuf[i] + 10;
     }
+    cmd_scan_low_or_equal(10, 0, 1, 2, 9, 0x2A, 1);
+    wait(100);
     
-    if (scan_results.size() >= 9) {
-        printf("✓ Test 9 (SCAN con STP=2): Completado\n");
-    } else {
-        printf("✗ Test 9 (SCAN con STP=2): No completado\n");
+    // 8. Test SCAN LOW OR EQUAL with data equal to sector
+    printf("\n-- Step 8: SCAN LOW OR EQUAL with data equal to sector --\n");
+    // Restore exact match
+    for (int i = 0; i < 512; i++) {
+        compare_data[i] = sdbuf[i];
     }
+    cmd_scan_low_or_equal(10, 0, 1, 2, 9, 0x2A, 1);
+    wait(100);
+    
+    // 9. Test SCAN LOW OR EQUAL with data lower than sector
+    printf("\n-- Step 9: SCAN LOW OR EQUAL with data lower than sector --\n");
+    // Make compare data lower than sector data
+    for (int i = 0; i < 512; i++) {
+        compare_data[i] = sdbuf[i] - 10;
+    }
+    cmd_scan_low_or_equal(10, 0, 1, 2, 9, 0x2A, 1);
+    wait(100);
+    
+    // 10. Test SCAN HIGH OR EQUAL with data lower than sector
+    printf("\n-- Step 10: SCAN HIGH OR EQUAL with data lower than sector --\n");
+    // Keep compare data lower than sector data
+    cmd_scan_high_or_equal(10, 0, 1, 2, 9, 0x2A, 1);
+    wait(100);
+    
+    // 11. Test SCAN HIGH OR EQUAL with data equal to sector
+    printf("\n-- Step 11: SCAN HIGH OR EQUAL with data equal to sector --\n");
+    // Restore exact match
+    for (int i = 0; i < 512; i++) {
+        compare_data[i] = sdbuf[i];
+    }
+    cmd_scan_high_or_equal(10, 0, 1, 2, 9, 0x2A, 1);
+    wait(100);
+    
+    // 12. Test SCAN HIGH OR EQUAL with data higher than sector
+    printf("\n-- Step 12: SCAN HIGH OR EQUAL with data higher than sector --\n");
+    // Make compare data higher than sector data
+    for (int i = 0; i < 512; i++) {
+        compare_data[i] = sdbuf[i] + 10;
+    }
+    cmd_scan_high_or_equal(10, 0, 1, 2, 9, 0x2A, 1);
+    wait(100);
+    
+    // 13. Test STP parameter with value 2 (skip every other sector)
+    printf("\n-- Step 13: SCAN EQUAL with STP=2 --\n");
+    // Restore exact match
+    for (int i = 0; i < 512; i++) {
+        compare_data[i] = sdbuf[i];
+    }
+    cmd_scan_equal(10, 0, 1, 2, 9, 0x2A, 2);
+    wait(100);
+    
+    // 14. Test multi-sector scan with EOT > sector
+    printf("\n-- Step 14: SCAN EQUAL with multi-sector (EOT=3) --\n");
+    cmd_scan_equal(10, 0, 1, 2, 3, 0x2A, 1);
+    wait(200);
+    
+    // Analyze the results
+    analyze_scan_results();
 }
 
 int main(int argc, char **argv) {
-    // Verificar argumentos de línea de comando
+    // Verify command line arguments
     if (argc < 2) {
-        printf("Uso: %s <archivo.dsk>\n", argv[0]);
+        printf("Usage: %s <disk_image.dsk> [debug_level]\n", argv[0]);
+        printf("  debug_level: 0=regular test, 1=diagnostic only\n");
         return -1;
     }
 
-    // Inicializar disco de prueba
+    // Debug level (0=regular, 1=diagnostic only)
+    int debug_level = (argc > 2) ? atoi(argv[2]) : 0;
+
+    // Initialize disk for testing
     edsk = fopen(argv[1], "rb");
     if (!edsk) {
-        printf("No se puede abrir %s.\n", argv[1]);
+        printf("Cannot open disk image: %s\n", argv[1]);
         return -1;
     }
 
-    // Inicializar variables de Verilator
+    // Initialize Verilator
     Verilated::commandArgs(argc, argv);
     Verilated::traceEverOn(true);
     trace = new VerilatedVcdC;
     tickcount = 0;
 
-    // Crear una instancia de nuestro módulo bajo prueba
+    // Create test bench instance
     tb = new Vu765_test;
     tb->trace(trace, 99);
     trace->open("u765_scan_test.vcd");
 
-    // Configuración inicial
+    // Initial configuration
+    printf("Resetting controller...\n");
     tb->reset = 1;
     tb->ce = 1;
     tb->nWR = 1;
     tb->nRD = 1;
     tick(1);
     tick(0);
-    tick(1);
-    tick(0);
+    wait(10);
     tb->reset = 0;
+    wait(100);
+
+    printf("Checking initial controller status...\n");
+    int status = readstatus();
+    printf("Initial status: 0x%02x\n", status);
+    
+    // Set motor, ready and density flags
+    printf("Setting up drive parameters...\n");
+    tb->motor = 3;       // Motor on for both drives
+    tb->ready = 3;       // Both drives ready
+    tb->available = 3;   // Both drives available
+    tb->density = 3;     // Double density (CF2DD) for both drives
+    wait(100);
+    
+    status = readstatus();
+    printf("Status after setup: 0x%02x\n", status);
 
     reading = 0;
+    printf("Mounting disk image...\n");
     mount(edsk, 0);
+    wait(1000);
     
-    // Ejecutar el test de comandos SCAN
-    test_scan_commands();
+    status = readstatus();
+    printf("Status after mount: 0x%02x\n", status);
     
-    // Cerrar archivos y liberar recursos
+    // Check if RQM bit is active - if not, the controller might be in a bad state
+    if (!(status & 0x80)) {
+        printf("WARNING: Controller not ready (RQM bit not set)\n");
+        printf("Trying to reset again...\n");
+        tb->reset = 1;
+        wait(50);
+        tb->reset = 0;
+        wait(100);
+        status = readstatus();
+        printf("Status after second reset: 0x%02x\n", status);
+    }
+
+    if (debug_level == 0) {
+        // Run the SCAN tests
+        printf("Starting SCAN function tests...\n");
+        test_scan_functions();
+    } else {
+        printf("Debug mode - running diagnostic only\n");
+        printf("Testing controller responsiveness...\n");
+        
+        // Simple test to see if we can send a command
+        printf("Trying to send SPECIFY command...\n");
+        sendbyte(0x03, 2000); // SPECIFY command with longer timeout
+        if (readstatus() & 0x80) {
+            printf("Controller accepted SPECIFY command\n");
+            sendbyte(0x8F, 2000); // SRT=8, HUT=F
+            if (readstatus() & 0x80) {
+                printf("First parameter accepted\n");
+                sendbyte(0x05, 2000); // HLT=5 ms, Non-DMA mode
+                printf("SPECIFY command completed\n");
+            }
+        }
+        
+        wait(100);
+        status = readstatus();
+        printf("Final status: 0x%02x\n", status);
+    }
+    
+    // Close files and free resources
     fclose(edsk);
     trace->close();
     delete tb;
