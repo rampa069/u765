@@ -92,7 +92,7 @@ module u765 #(
   localparam UPD765_SD_BUFF_TRACKINFO = 1'd0;
   localparam UPD765_SD_BUFF_SECTOR = 1'd1;
 
-  typedef enum bit [5:0] {
+  typedef enum bit [6:0] {
   COMMAND_IDLE,                  // 00 - Command processor idle state
   COMMAND_READ_TRACK,            // 01 - Read entire track
   COMMAND_WRITE_DELETED_DATA,    // 02 - Write data with deleted address mark
@@ -149,7 +149,15 @@ module u765 #(
   COMMAND_RELOAD_TRACKINFO3,     // 35 - Reload track information step 3
   COMMAND_SCAN_SETUP,            // 36 - Setup for SCAN commands
   COMMAND_SETUP_VALIDATION,      // 37 - Validate command parameters
-  COMMAND_RESET                  // 38 - Reset controller state
+  COMMAND_RESET,                  // 38 - Reset controller state
+  COMMAND_SCAN_EXEC1,
+  COMMAND_SCAN_EXEC2,
+  COMMAND_SCAN_EXEC3, 
+  COMMAND_SCAN_EXEC4,
+  COMMAND_SCAN_READ_SECTOR,
+  COMMAND_SCAN_COMPARE,
+  COMMAND_SCAN_NEXT,
+  COMMAND_FAKE
 } state_t;
 
 typedef enum bit [1:0] {
@@ -495,110 +503,112 @@ typedef enum bit [1:0] {
         i_substate <= 0;
       end else begin
         case (state)
-          COMMAND_IDLE: begin
-            //$display("COMANDO RECIBIDO: din = 0x%02x", din);
 
-            // Imprimir bits decodificados
-            //$display("Bits comando: MT=%b, SK=%b", din[7], din[5]);
-
-            m_status[UPD765_MAIN_DIO] <= 0;
-            m_status[UPD765_MAIN_RQM] <= !image_scan_state[0] & !image_scan_state[1];
-            // reset tc
-            //tc <= 1'b0;
-            phase <= PHASE_COMMAND;
-            if (~old_wr & wr & a0 & !image_scan_state[0] & !image_scan_state[1]) begin
-              i_mt <= din[7];
-              //i_mfm <= din[6];
-              i_sk <= din[5];
-
-              i_substate <= 0;
-
-              casex (din[7:0])
-                8'bXXX_00110: begin
-                  state <= COMMAND_READ_DATA;
-                  last_state <= COMMAND_READ_DATA;
-                end
-                8'bXXX_01100: begin
-                  state <= COMMAND_READ_DELETED_DATA;
-                  last_state <= COMMAND_READ_DELETED_DATA;
-                end
-                8'bXX0_00101: begin
-                  state <= COMMAND_WRITE_DATA;
-                  last_state <= COMMAND_WRITE_DATA;
-                end
-                8'bXX0_01001: begin
-                  state <= COMMAND_WRITE_DELETED_DATA;
-                  last_state <= COMMAND_WRITE_DELETED_DATA;
-                end
-                8'b0XX_00010: begin
-                  state <= COMMAND_READ_TRACK;
-                  last_state <= COMMAND_READ_TRACK;
-                end
-                8'b0X0_01010: begin
-                  state <= COMMAND_READ_ID;
-                  last_state <= COMMAND_READ_ID;
-                end
-                8'b0X0_01101: begin
-                  state <= COMMAND_FORMAT_TRACK;
-                  last_state <= COMMAND_FORMAT_TRACK;
-                end
-                8'b000_10001: begin
-                  state <= COMMAND_SCAN_EQUAL;
-                  last_state <= COMMAND_SCAN_EQUAL;
-                  i_scan_mode[ds0] <= 2'b01;
-                  $display("SCAN_EQUAL command detected, mode set to: %b", 2'b01);
-                end
-                8'b000_11001: begin
-                  state <= COMMAND_SCAN_LOW_OR_EQUAL;
-                  last_state <= COMMAND_SCAN_LOW_OR_EQUAL;
-                  i_scan_mode[ds0] <= 2'b10;
-                  $display("SCAN_LOW_OR_EQUAL command detected, mode set to: %b", 2'b10);
-                end
-                8'b000_11101: begin
-                  state <= COMMAND_SCAN_HIGH_OR_EQUAL;
-                  last_state <= COMMAND_SCAN_HIGH_OR_EQUAL;
-                  i_scan_mode[ds0] <= 2'b11;
-                  $display("SCAN_HIGH_OR_EQUAL command detected, mode set to: %b", 2'b11);
-                end
-                8'b000_00111: begin
-                  state <= COMMAND_RECALIBRATE;
-                  last_state <= COMMAND_RECALIBRATE;
-                end
-                8'b000_01000: begin
-                  state <= COMMAND_SENSE_INTERRUPT_STATUS;
-                  last_state <= COMMAND_SENSE_INTERRUPT_STATUS;
-                end
-                8'b000_00011: begin
-                  state <= COMMAND_SPECIFY;
-                  last_state <= COMMAND_SPECIFY;
-                end
-                8'b000_00100: begin
-                  state <= COMMAND_SENSE_DRIVE_STATUS;
-                  last_state <= COMMAND_SENSE_DRIVE_STATUS;
-                end
-                8'b000_01111: begin
-                  state <= COMMAND_SEEK;
-                  last_state <= COMMAND_SEEK;
-                end
-                default: begin
-                  state <= COMMAND_INVALID;
-                  last_state <= COMMAND_INVALID;
-                end
-              endcase
-
-              $display("COMANDO RECIBIDO: din = 0x%02x (binario: %b)", din, din);
-
-              // Descomponer los bits
-              $display("Desglose de bits:");
-              $display("Bit 7 (MT): %b", din[7]);
-              $display("Bit 6: %b", din[6]);
-              $display("Bit 5 (SK): %b", din[5]);
-              $display("Bit 4-0: %b", din[4:0]);
-
-            end else if (~old_rd & rd & a0) begin
-              m_data <= 8'hff;
-            end
+        COMMAND_IDLE: begin
+          //$display("COMANDO RECIBIDO: din = 0x%02x", din);
+        
+          // Imprimir bits decodificados
+          //$display("Bits comando: MT=%b, SK=%b", din[7], din[5]);
+        
+          m_status[UPD765_MAIN_DIO] <= 0;
+          m_status[UPD765_MAIN_RQM] <= !image_scan_state[0] & !image_scan_state[1];
+          // reset tc
+          //tc <= 1'b0;
+          phase <= PHASE_COMMAND;
+          if (~old_wr & wr & a0 & !image_scan_state[0] & !image_scan_state[1]) begin
+            i_mt <= din[7];
+            //i_mfm <= din[6];
+            i_sk <= din[5];
+        
+            i_substate <= 0;
+        
+            casex (din[7:0])
+              8'bXXX_00110: begin
+                state <= COMMAND_READ_DATA;
+                last_state <= COMMAND_READ_DATA;
+              end
+              8'bXXX_01100: begin
+                state <= COMMAND_READ_DELETED_DATA;
+                last_state <= COMMAND_READ_DELETED_DATA;
+              end
+              8'bXX0_00101: begin
+                state <= COMMAND_WRITE_DATA;
+                last_state <= COMMAND_WRITE_DATA;
+              end
+              8'bXX0_01001: begin
+                state <= COMMAND_WRITE_DELETED_DATA;
+                last_state <= COMMAND_WRITE_DELETED_DATA;
+              end
+              8'b0XX_00010: begin
+                state <= COMMAND_READ_TRACK;
+                last_state <= COMMAND_READ_TRACK;
+              end
+              8'b0X0_01010: begin
+                state <= COMMAND_READ_ID;
+                last_state <= COMMAND_READ_ID;
+              end
+              8'b0X0_01101: begin
+                state <= COMMAND_FORMAT_TRACK;
+                last_state <= COMMAND_FORMAT_TRACK;
+              end
+              8'b000_10001: begin
+                state <= COMMAND_SCAN_EQUAL;
+                last_state <= COMMAND_SCAN_EQUAL;
+                i_scan_mode[ds0] <= 2'b01;
+                $display("SCAN_EQUAL command detected, mode set to: %b", 2'b01);
+              end
+              8'b000_11001: begin
+                state <= COMMAND_SCAN_LOW_OR_EQUAL;
+                last_state <= COMMAND_SCAN_LOW_OR_EQUAL;
+                i_scan_mode[ds0] <= 2'b10;
+                $display("SCAN_LOW_OR_EQUAL command detected, mode set to: %b", 2'b10);
+              end
+              8'b000_11101: begin
+                state <= COMMAND_SCAN_HIGH_OR_EQUAL;
+                last_state <= COMMAND_SCAN_HIGH_OR_EQUAL;
+                i_scan_mode[ds0] <= 2'b11;
+                $display("SCAN_HIGH_OR_EQUAL command detected, mode set to: %b", 2'b11);
+              end
+              8'b000_00111: begin
+                state <= COMMAND_RECALIBRATE;
+                last_state <= COMMAND_RECALIBRATE;
+              end
+              8'b000_01000: begin
+                state <= COMMAND_SENSE_INTERRUPT_STATUS;
+                last_state <= COMMAND_SENSE_INTERRUPT_STATUS;
+              end
+              8'b000_00011: begin
+                state <= COMMAND_SPECIFY;
+                last_state <= COMMAND_SPECIFY;
+              end
+              8'b000_00100: begin
+                state <= COMMAND_SENSE_DRIVE_STATUS;
+                last_state <= COMMAND_SENSE_DRIVE_STATUS;
+              end
+              8'b000_01111: begin
+                state <= COMMAND_SEEK;
+                last_state <= COMMAND_SEEK;
+              end
+              default: begin
+                state <= COMMAND_INVALID;
+                last_state <= COMMAND_INVALID;
+              end
+            endcase
+        
+            $display("COMANDO RECIBIDO: din = 0x%02x (binario: %b)", din, din);
+        
+            // Descomponer los bits
+            $display("Desglose de bits:");
+            $display("Bit 7 (MT): %b", din[7]);
+            $display("Bit 6: %b", din[6]);
+            $display("Bit 5 (SK): %b", din[5]);
+            $display("Bit 4-0: %b", din[4:0]);
+        
+          end else if (~old_rd & rd & a0) begin
+            m_data <= 8'hff;
           end
+
+        end
 
           COMMAND_SENSE_INTERRUPT_STATUS: begin
             m_status[UPD765_MAIN_DIO] <= 1;
@@ -838,81 +848,7 @@ typedef enum bit [1:0] {
             i_scan_mode[ds0] <= 2'b00;  // Normal mode, no scan
           end
 
-          COMMAND_RW_DATA_EXEC6:
-          if (~sd_busy & ~buff_wait) begin
-            $display(
-                "RW_DATA_EXEC6: i_bytes_to_read=%d, m_status=%h, i_scan_mode=%b, old_rd=%b, rd=%b, a0=%b",
-                i_bytes_to_read, m_status, i_scan_mode, old_rd, rd, a0);
-
-            if (!i_bytes_to_read) begin
-              //end of the current sector in buffer, so write it to SD card
-              if (i_write && buff_addr && i_seek_pos < image_size[ds0]) begin
-                sd_lba <= i_seek_pos[31:9];
-                sd_wr[ds0] <= 1;
-                sd_busy <= 1;
-              end
-              state <= COMMAND_RW_DATA_EXEC8;
-            end else if (~m_status[UPD765_MAIN_RQM]) begin
-              m_status[UPD765_MAIN_RQM] <= 1;
-              if (ndma_mode) int_state[ds0] <= 1'b1;
-            end else if (~i_write & ~old_rd & rd & a0) begin
-              if (&buff_addr) begin
-                //sector continues on the next LBA
-                state <= COMMAND_RW_DATA_EXEC5;
-              end
-
-              // Para comandos SCAN, el proceso es:
-              // 1. Leer el byte del sector (aquí)
-              // 2. Presentar el byte al CPU (m_data <= buff_data_in)
-              // 3. Luego esperar a que el CPU envíe un byte para comparar
-              if (i_scan_mode[ds0] != 2'b00) begin
-                // Para comandos SCAN: guardar el dato del sector para comparación
-                m_data <= buff_data_in;
-                $display("RW_DATA_EXEC6: SCAN mode, sector data=%h", buff_data_in);
-
-                // Avanzar punteros y preparar para la siguiente lectura
-                if (i_sector_size) begin
-                  i_sector_size <= i_sector_size - 1'd1;
-                  buff_addr <= buff_addr + 1'd1;
-                  buff_wait <= 1;
-                  i_seek_pos <= i_seek_pos + 1'd1;
-                end
-
-                // Cambiar a estado SCAN_COMPARE
-                i_timeout <= OVERRUN_TIMEOUT;
-                state <= COMMAND_RW_DATA_SCAN_COMPARE;
-
-                // Importante: mantener RQM activo para que el CPU pueda enviar dato
-                m_status[UPD765_MAIN_RQM] <= 1;
-
-                // Nota: NO desactivamos la interrupción para NDMA aquí
-                // porque necesitamos que el CPU envíe datos para comparar
-              end else begin
-                // Operaciones de lectura normal
-                m_data <= buff_data_in;
-                m_status[UPD765_MAIN_RQM] <= 0;
-                if (i_sector_size) begin
-                  i_sector_size <= i_sector_size - 1'd1;
-                  buff_addr <= buff_addr + 1'd1;
-                  buff_wait <= 1;
-                  i_seek_pos <= i_seek_pos + 1'd1;
-                end
-                i_bytes_to_read <= i_bytes_to_read - 1'd1;
-                i_timeout <= OVERRUN_TIMEOUT;
-                if (ndma_mode) int_state[ds0] <= 1'b0;
-              end
-            end else if (i_write & ~old_wr & wr & a0) begin
-              buff_wr <= 1;
-              buff_data_out <= din;
-              i_timeout <= OVERRUN_TIMEOUT;
-              m_status[UPD765_MAIN_RQM] <= 0;
-              state <= COMMAND_RW_DATA_EXEC7;
-              if (ndma_mode) int_state[ds0] <= 1'b0;
-            end else begin
-              i_timeout <= i_timeout - 1'd1;
-            end
-          end
-
+ 
           // Corregir el estado COMMAND_RW_DATA_SCAN_COMPARE para manejar correctamente la comparación
           COMMAND_RW_DATA_SCAN_COMPARE: begin
             // El dato del sector ya está en m_data (configurado en EXEC6)
@@ -1053,135 +989,183 @@ typedef enum bit [1:0] {
           end
 
           // Bloque completo COMMAND_RW_DATA_EXEC8
-          COMMAND_RW_DATA_EXEC8:
-          if (~sd_busy) begin
-            $display("RW_DATA_EXEC8: scan_mode=%b, scan_match=%b", i_scan_mode[ds0], i_scan_match);
-
-            if (~i_rtrack & ~(i_sk & (i_rw_deleted ^ i_sector_st2[6])) &
-        ((i_sector_st1[5] & i_sector_st2[5]) | (i_rw_deleted ^ i_sector_st2[6]))) begin
-              // Marca borrada o error CRC
+          COMMAND_RW_DATA_EXEC3:
+          if (~sd_busy & ~buff_wait) begin
+            $display(
+                "COMMAND_RW_DATA_EXEC3: buff_addr=%h, i_current_sector=%d, i_total_sectors=%d, image_ready=%d",
+                buff_addr[7:0], i_current_sector, i_total_sectors, image_ready[ds0]);
+                $display("EXEC3: Checking sector %d/%d, current sector info: C=%d, H=%d, R=%d, N=%d",
+                i_current_sector, i_total_sectors, i_sector_c, i_sector_h, i_sector_r, i_sector_n);
+            if (buff_addr[7:0] == 8'h14) begin
+              if (!image_edsk[ds0]) i_sector_size <= 8'h80 << buff_data_in[2:0];
+              buff_addr[7:0] <= 8'h18;  //sector info list
+              buff_wait <= 1;
+              $display("Setting sector size and moving to sector info list");
+            end else if (i_current_sector > i_total_sectors) begin
+              $display("ERROR: Sector not found or end of track - current=%d, total=%d",
+                       i_current_sector, i_total_sectors);
               m_status[UPD765_MAIN_EXM] <= 0;
-              status[0] <= 8'h40;
-              status[1] <= i_sector_st1;
-              status[2] <= i_sector_st2 | (i_rw_deleted ? 8'h40 : 8'h0);
-              state <= COMMAND_READ_RESULTS;
-              int_state[ds0] <= 1'b1;
-              phase <= PHASE_RESPONSE;
-            end else if ((i_rtrack ? i_current_sector : i_sector_r) == i_eot) begin
-              // Fin de cilindro
-              m_status[UPD765_MAIN_EXM] <= 0;
-
-              // Manejo especial para comandos SCAN
-              if (i_scan_mode[ds0] != 2'b00) begin
-                $display(
-                    "Operación SCAN completada en EOT, match=%b, configurando códigos de resultado",
-                    i_scan_match);
-
-                // Configurar ST0 (terminación normal)
-                status[0] <= 8'h00;
-
-                // Configurar ST1 (sin errores)  
-                status[1] <= 8'h00;
-
-                // Configurar ST2 con los bits de resultado de SCAN apropiados
-                if (i_scan_match) begin
-                  // Según la especificación uPD765, los bits 2-3 en ST2 indican el resultado de SCAN:
-                  // 00 = vacío (no satisfecho) 
-                  // 01 = vacío (no satisfecho)
-                  // 10 = satisfecho (SCAN LOW/HIGH)
-                  // 11 = satisfecho (SCAN EQUAL)
-                  case (i_scan_mode[ds0])
-                    2'b01:
-                    status[2] <= 8'h10;  // SCAN_EQUAL - bits 2-3 = 11 (scan equal satisfecho)
-                    2'b10:
-                    status[2] <= 8'h08;  // SCAN_LOW_OR_EQUAL - bits 2-3 = 10 (scan low satisfecho) 
-                    2'b11:
-                    status[2] <= 8'h08;  // SCAN_HIGH_OR_EQUAL - bits 2-3 = 10 (scan high satisfecho)
-                  endcase
-                  $display("Coincidencia SCAN encontrada, configurando ST2=0x%02x", status[2]);
-                end else begin
-                  // No se encontró coincidencia
-                  status[2] <= 8'h00;
-                  $display("No se encontró coincidencia SCAN, configurando ST2=0x00");
-                end
-              end else begin
-                // Manejo de comandos normales
-                status[0] <= i_rtrack ? 8'h00 : 8'h00;
-                status[1] <= 8'h00;
-                status[2] <= (i_rw_deleted ^ i_sector_st2[6]) ? 8'h40 : 8'h0;
-              end
-
+              //sector not found or end of track
+              status[0] <= i_rtrack ? 8'h00 : 8'h40;
+              status[1] <= i_rtrack ? 8'h00 : 8'h04;
+              status[2] <= i_rtrack | ~i_bc ? 8'h00 : (i_sector_c == 8'hff ? 8'h02 : 8'h10); //bad/wrong cylinder
               state <= COMMAND_READ_RESULTS;
               int_state[ds0] <= 1'b1;
               phase <= PHASE_RESPONSE;
             end else begin
-              // Leer el siguiente sector (transferencia multi-sector)
-              if (i_mt & image_sides[ds0]) begin
-                hds <= ~hds;
-                i_h <= ~i_h;
-                image_track_offsets_addr <= {pcn[ds0], ~hds};
-                buff_wait <= 1;
-              end
-
-              // Verificar si encontramos una coincidencia en modo SCAN
-              if (i_scan_mode[ds0] != 2'b00 && i_scan_match) begin
-                // Si encontramos una coincidencia en modo SCAN, terminar con códigos de estado apropiados
-                m_status[UPD765_MAIN_EXM] <= 0;
-                status[0] <= 8'h00;  // Terminación normal
-                status[1] <= 8'h00;  // Sin errores
-
-                // Configurar bits de resultado SCAN apropiados en ST2
-                case (i_scan_mode[ds0])
-                  2'b01: begin
-                    status[2] <= 8'h10;  // SCAN_EQUAL - bits 2-3 = 11 (scan equal satisfecho)
-                    $display("Coincidencia SCAN_EQUAL encontrada, configurando ST2=0x10");
-                  end
-                  2'b10: begin
-                    status[2] <= 8'h08;  // SCAN_LOW_OR_EQUAL - bits 2-3 = 10 (scan low satisfecho)
-                    $display("Coincidencia SCAN_LOW_OR_EQUAL encontrada, configurando ST2=0x08");
-                  end
-                  2'b11: begin
-                    status[2] <= 8'h08;  // SCAN_HIGH_OR_EQUAL - bits 2-3 = 10 (scan high satisfecho)
-                    $display("Coincidencia SCAN_HIGH_OR_EQUAL encontrada, configurando ST2=0x08");
-                  end
-                endcase
-
-                state <= COMMAND_READ_RESULTS;
-                int_state[ds0] <= 1'b1;
-                phase <= PHASE_RESPONSE;
-              end else begin
-                // Inicializar i_scan_match para el siguiente sector si continuamos
-                i_scan_match <= 0;
-
-                // Incremento normal o por STP para comandos SCAN
-                if (~i_mt | hds | ~image_sides[ds0]) begin
-                  if (i_scan_mode[ds0] != 2'b00) begin
-                    // Para SCAN, incrementar según el valor de STP
-                    case (i_stp)
-                      2'b00, 2'b01: begin
-                        i_r <= i_r + 1'd1;  // STP=1: leer cada sector
-                        $display("SCAN usando STP=1, pasando al sector %d", i_r + 1'd1);
-                      end
-                      2'b10: begin
-                        i_r <= i_r + 2'd2;  // STP=2: leer sectores alternos
-                        $display("SCAN usando STP=2, pasando al sector %d", i_r + 2'd2);
-                      end
-                      2'b11: begin
-                        i_r <= i_r + 2'd3;  // STP=3: leer cada tercer sector
-                        $display("SCAN usando STP=3, pasando al sector %d", i_r + 2'd3);
-                      end
-                    endcase
-                  end else begin
-                    // Para otros comandos, comportamiento normal
-                    i_r <= i_r + 1'd1;
-                  end
+              //process sector info list
+              case (buff_addr[2:0])
+                0: begin
+                  i_sector_c <= buff_data_in;
+                  $display("Sector C=%h", buff_data_in);
                 end
-
-                state <= COMMAND_RW_DATA_EXEC2;
-              end
+                1: begin
+                  i_sector_h <= buff_data_in;
+                  $display("Sector H=%h", buff_data_in);
+                end
+                2: begin
+                  i_sector_r <= buff_data_in;
+                  $display("Sector R=%h", buff_data_in);
+                end
+                3: begin
+                  i_sector_n <= buff_data_in;
+                  $display("Sector N=%h", buff_data_in);
+                end
+                4: begin
+                  i_sector_st1 <= buff_data_in;
+                  $display("Sector ST1=%h", buff_data_in);
+                end
+                5: begin
+                  i_sector_st2 <= buff_data_in;
+                  $display("Sector ST2=%h", buff_data_in);
+                end
+                6: begin
+                  if (image_edsk[ds0]) i_sector_size[7:0] <= buff_data_in;
+                  $display("Sector size low=%h", buff_data_in);
+                end
+                7: begin
+                  // start scanning of the sector IDs from the sector at the current head position
+                  if (image_edsk[ds0]) i_sector_size[15:8] <= buff_data_in;
+                  $display("Sector size high=%h, moving to EXEC4", buff_data_in);
+                  state <= COMMAND_RW_DATA_EXEC4;
+                end
+              endcase
+              buff_addr <= buff_addr + 1'd1;
+              buff_wait <= 1;
             end
           end
+          COMMAND_RW_DATA_EXEC4:
+if ((i_rtrack && i_current_sector == i_r) ||
+    (~i_rtrack && i_sector_c == i_c && i_sector_r == i_r && i_sector_h == i_h && (i_sector_n == i_n || !i_n))) begin
+  $display("EXEC4: Looking for C=%d, H=%d, R=%d, N=%d", i_c, i_h, i_r, i_n);
+  $display("EXEC4: Found C=%d, H=%d, R=%d, N=%d", i_sector_c, i_sector_h, i_sector_r, i_sector_n);
+  //sector found in the sector info list
+  if (i_sk & ~i_rtrack & (i_rw_deleted ^ i_sector_st2[6])) begin
+    $display("EXEC4 to EXEC8:");
+    state <= COMMAND_RW_DATA_EXEC8;
+  end else begin
+    i_bytes_to_read <= i_n ? (8'h80 << (i_n[3] ? 4'h8 : i_n[2:0])) : i_dtl;
+    i_timeout <= OVERRUN_TIMEOUT;
+    i_weak_sector <= 0;
+    state <= COMMAND_RW_DATA_WAIT_SECTOR;
+  end
+end else begin
+  //try the next sector in the sectorinfo list
+  $display("EXEC4 Next Sector:");
+  if (i_sector_c == i_c) i_bc <= 0;
+  i_current_sector <= i_current_sector + 1'd1;
+  i_seek_pos <= i_seek_pos + i_sector_size;
+  state <= COMMAND_RW_DATA_EXEC3;
+end
 
+COMMAND_RW_DATA_EXEC6:
+if (~sd_busy & ~buff_wait) begin
+  $display("RW_DATA_EXEC6: i_bytes_to_read=%d, m_status=%h", i_bytes_to_read, m_status);
+
+  if (!i_bytes_to_read) begin
+    //end of the current sector in buffer, so write it to SD card
+    if (i_write && buff_addr && i_seek_pos < image_size[ds0]) begin
+      sd_lba <= i_seek_pos[31:9];
+      sd_wr[ds0] <= 1;
+      sd_busy <= 1;
+    end
+    state <= COMMAND_RW_DATA_EXEC8;
+  end else if (~m_status[UPD765_MAIN_RQM]) begin
+    m_status[UPD765_MAIN_RQM] <= 1;
+    if (ndma_mode) int_state[ds0] <= 1'b1;
+  end else if (~i_write & ~old_rd & rd & a0) begin
+    if (&buff_addr) begin
+      //sector continues on the next LBA
+      state <= COMMAND_RW_DATA_EXEC5;
+    end
+
+    // Operaciones de lectura normal
+    m_data <= buff_data_in;
+    m_status[UPD765_MAIN_RQM] <= 0;
+    if (i_sector_size) begin
+      i_sector_size <= i_sector_size - 1'd1;
+      buff_addr <= buff_addr + 1'd1;
+      buff_wait <= 1;
+      i_seek_pos <= i_seek_pos + 1'd1;
+    end
+    i_bytes_to_read <= i_bytes_to_read - 1'd1;
+    i_timeout <= OVERRUN_TIMEOUT;
+    if (ndma_mode) int_state[ds0] <= 1'b0;
+  end else if (i_write & ~old_wr & wr & a0) begin
+    buff_wr <= 1;
+    buff_data_out <= din;
+    i_timeout <= OVERRUN_TIMEOUT;
+    m_status[UPD765_MAIN_RQM] <= 0;
+    state <= COMMAND_RW_DATA_EXEC7;
+    if (ndma_mode) int_state[ds0] <= 1'b0;
+  end else begin
+    i_timeout <= i_timeout - 1'd1;
+  end
+end
+
+COMMAND_RW_DATA_EXEC8:
+if (~sd_busy) begin
+  $display("RW_DATA_EXEC8: Normal Read/Write command");
+
+  if (~i_rtrack & ~(i_sk & (i_rw_deleted ^ i_sector_st2[6])) &
+      ((i_sector_st1[5] & i_sector_st2[5]) | (i_rw_deleted ^ i_sector_st2[6]))) begin
+    // Marca borrada o error CRC
+    m_status[UPD765_MAIN_EXM] <= 0;
+    status[0] <= 8'h40;
+    status[1] <= i_sector_st1;
+    status[2] <= i_sector_st2 | (i_rw_deleted ? 8'h40 : 8'h0);
+    state <= COMMAND_READ_RESULTS;
+    int_state[ds0] <= 1'b1;
+    phase <= PHASE_RESPONSE;
+  end else if ((i_rtrack ? i_current_sector : i_sector_r) == i_eot) begin
+    // Fin de cilindro
+    m_status[UPD765_MAIN_EXM] <= 0;
+
+    // Manejo para comandos normales
+    status[0] <= i_rtrack ? 8'h00 : 8'h00;
+    status[1] <= 8'h00;
+    status[2] <= (i_rw_deleted ^ i_sector_st2[6]) ? 8'h40 : 8'h0;
+
+    state <= COMMAND_READ_RESULTS;
+    int_state[ds0] <= 1'b1;
+    phase <= PHASE_RESPONSE;
+  end else begin
+    // Leer el siguiente sector (transferencia multi-sector)
+    if (i_mt & image_sides[ds0]) begin
+      hds <= ~hds;
+      i_h <= ~i_h;
+      image_track_offsets_addr <= {pcn[ds0], ~hds};
+      buff_wait <= 1;
+    end
+
+    // Incremento normal para comandos estándar
+    if (~i_mt | hds | ~image_sides[ds0]) begin
+      i_r <= i_r + 1'd1;
+    end
+
+    state <= COMMAND_RW_DATA_EXEC2;
+  end
+end
 
           // Fix the COMMAND_READ_RESULTS state to correctly return the status registers
           COMMAND_READ_RESULTS: begin
@@ -1234,37 +1218,26 @@ typedef enum bit [1:0] {
             end else m_status[UPD765_MAIN_RQM] <= 0;
           end
 
-          // Make sure i_scan_match is properly reset at the start of SCAN commands
           COMMAND_SCAN_EQUAL: begin
-            int_state <= '{ 0, 0 };
-            i_command <= COMMAND_RW_DATA_EXEC;
-            state <= COMMAND_SETUP;
-            {i_rtrack, i_write, i_rw_deleted} <= 3'b000;  // Similar to READ_DATA
+            int_state <= '{0, 0};
             i_scan_mode[ds0] <= 2'b01;  // SCAN_EQUAL mode
             i_scan_match <= 0;     // Reset match flag
-            $display("COMMAND_SCAN_EQUAL: Starting setup with mode=01");
+            state <= COMMAND_SETUP; // Reutilizar configuración inicial
           end
-
+          
           COMMAND_SCAN_LOW_OR_EQUAL: begin
-            int_state <= '{ 0, 0 };
-            i_command <= COMMAND_RW_DATA_EXEC;
-            state <= COMMAND_SETUP;
-            {i_rtrack, i_write, i_rw_deleted} <= 3'b000;  // Similar to READ_DATA
-            i_scan_mode [ds0]<= 2'b10;  // SCAN_LOW_OR_EQUAL mode
+            int_state <= '{0, 0};
+            i_scan_mode[ds0] <= 2'b10;  // SCAN_LOW_OR_EQUAL mode
             i_scan_match <= 0;     // Reset match flag
-            $display("COMMAND_SCAN_LOW_OR_EQUAL: Starting setup with mode=10");
+            state <= COMMAND_SETUP; // Reutilizar configuración inicial
           end
-
+          
           COMMAND_SCAN_HIGH_OR_EQUAL: begin
-            int_state <= '{ 0, 0 };
-            i_command <= COMMAND_RW_DATA_EXEC;
-            state <= COMMAND_SETUP;
-            {i_rtrack, i_write, i_rw_deleted} <= 3'b000;  // Similar to READ_DATA
-            i_scan_mode [ds0]<= 2'b11;  // SCAN_HIGH_OR_EQUAL mode
+            int_state <= '{0, 0};
+            i_scan_mode[ds0] <= 2'b11;  // SCAN_HIGH_OR_EQUAL mode
             i_scan_match <= 0;     // Reset match flag
-            $display("COMMAND_SCAN_HIGH_OR_EQUAL: Starting setup with mode=11");
+            state <= COMMAND_SETUP; // Reutilizar configuración inicial
           end
-
           // Ensure SETUP_VALIDATION also resets i_scan_match for each new command
 
           // Fix the initialization of SCAN mode variables
@@ -1331,97 +1304,7 @@ typedef enum bit [1:0] {
             end
           end
 
-          COMMAND_RW_DATA_EXEC3:
-          if (~sd_busy & ~buff_wait) begin
-            $display(
-                "COMMAND_RW_DATA_EXEC3: buff_addr=%h, i_current_sector=%d, i_total_sectors=%d, image_ready=%d",
-                buff_addr[7:0], i_current_sector, i_total_sectors, image_ready[ds0]);
-                $display("EXEC3: Checking sector %d/%d, current sector info: C=%d, H=%d, R=%d, N=%d",
-                i_current_sector, i_total_sectors, i_sector_c, i_sector_h, i_sector_r, i_sector_n);
-            if (buff_addr[7:0] == 8'h14) begin
-              if (!image_edsk[ds0]) i_sector_size <= 8'h80 << buff_data_in[2:0];
-              buff_addr[7:0] <= 8'h18;  //sector info list
-              buff_wait <= 1;
-              $display("Setting sector size and moving to sector info list");
-            end else if (i_current_sector > i_total_sectors) begin
-              $display("ERROR: Sector not found or end of track - current=%d, total=%d",
-                       i_current_sector, i_total_sectors);
-              m_status[UPD765_MAIN_EXM] <= 0;
-              //sector not found or end of track
-              status[0] <= i_rtrack ? 8'h00 : 8'h40;
-              status[1] <= i_rtrack ? 8'h00 : 8'h04;
-              status[2] <= i_rtrack | ~i_bc ? 8'h00 : (i_sector_c == 8'hff ? 8'h02 : 8'h10); //bad/wrong cylinder
-              state <= COMMAND_READ_RESULTS;
-              int_state[ds0] <= 1'b1;
-              phase <= PHASE_RESPONSE;
-            end else begin
-              //process sector info list
-              case (buff_addr[2:0])
-                0: begin
-                  i_sector_c <= buff_data_in;
-                  $display("Sector C=%h", buff_data_in);
-                end
-                1: begin
-                  i_sector_h <= buff_data_in;
-                  $display("Sector H=%h", buff_data_in);
-                end
-                2: begin
-                  i_sector_r <= buff_data_in;
-                  $display("Sector R=%h", buff_data_in);
-                end
-                3: begin
-                  i_sector_n <= buff_data_in;
-                  $display("Sector N=%h", buff_data_in);
-                end
-                4: begin
-                  i_sector_st1 <= buff_data_in;
-                  $display("Sector ST1=%h", buff_data_in);
-                end
-                5: begin
-                  i_sector_st2 <= buff_data_in;
-                  $display("Sector ST2=%h", buff_data_in);
-                end
-                6: begin
-                  if (image_edsk[ds0]) i_sector_size[7:0] <= buff_data_in;
-                  $display("Sector size low=%h", buff_data_in);
-                end
-                7: begin
-                  // start scanning of the sector IDs from the sector at the current head position
-                  if (image_edsk[ds0]) i_sector_size[15:8] <= buff_data_in;
-                  $display("Sector size high=%h, moving to EXEC4", buff_data_in);
-                  state <= COMMAND_RW_DATA_EXEC4;
-                end
-              endcase
-              buff_addr <= buff_addr + 1'd1;
-              buff_wait <= 1;
-            end
-          end
-
-          // Examine the last found sector and check if we located the right one
-          COMMAND_RW_DATA_EXEC4:
-          if ((i_rtrack && i_current_sector == i_r) ||
-				(~i_rtrack && i_sector_c == i_c && i_sector_r == i_r && i_sector_h == i_h && (i_sector_n == i_n || !i_n))) begin
-            $display("EXEC4: Looking for C=%d, H=%d, R=%d, N=%d", i_c, i_h, i_r, i_n);
-            $display("EXEC4: Found C=%d, H=%d, R=%d, N=%d", i_sector_c, i_sector_h, i_sector_r, i_sector_n);
-            //sector found in the sector info list
-            if (i_sk & ~i_rtrack & (i_rw_deleted ^ i_sector_st2[6])) begin
-              $display("EXEC4 to EXEC8:");
-              state <= COMMAND_RW_DATA_EXEC8;
-            end else begin
-              i_bytes_to_read <= i_n ? (8'h80 << (i_n[3] ? 4'h8 : i_n[2:0])) : i_dtl;
-              i_timeout <= OVERRUN_TIMEOUT;
-              i_weak_sector <= 0;
-              state <= COMMAND_RW_DATA_WAIT_SECTOR;
-            end
-          end else begin
-            //try the next sector in the sectorinfo list
-            $display("EXEC4 Next Sector:");
-            if (i_sector_c == i_c) i_bc <= 0;
-            i_current_sector <= i_current_sector + 1'd1;
-            i_seek_pos <= i_seek_pos + i_sector_size;
-            state <= COMMAND_RW_DATA_EXEC3;
-          end
-
+ 
           //wait for the sector needed for positioning at the head - delay only
           COMMAND_RW_DATA_WAIT_SECTOR:
           if ((i_current_sector_pos[ds0][hds] == i_current_sector - 1'd1) && !i_rpm_timer[ds0][hds]) begin
@@ -1489,7 +1372,282 @@ typedef enum bit [1:0] {
           end
 
 
+          COMMAND_SCAN_EXEC1: begin
+            $display("COMMAND_SCAN_EXEC1: Starting SCAN operation, mode=%b", i_scan_mode[ds0]);
+            $display("SCAN parameters: C=%d, H=%d, R=%d, N=%d, EOT=%d", i_c, i_h, i_r, i_n, i_eot);
+            
+            m_status[UPD765_MAIN_DIO] <= 0;
+            i_bc <= 1;
+            i_scan_match <= 0;
+            
+            // Forzar la recarga de la información de pista
+            image_trackinfo_dirty[ds0] <= 1;
+            
+            // Y asegurarnos de que usamos el PCN correcto
+            if (pcn[ds0] != i_c) begin
+              $display("SCAN: Forcing head movement from track %d to %d", pcn[ds0], i_c);
+              pcn[ds0] <= i_c;
+            end
+            
+            m_status[UPD765_MAIN_RQM] <= 0;
+            i_command <= COMMAND_SCAN_EXEC2;
+            state <= COMMAND_RELOAD_TRACKINFO;
+          end
+          
+          COMMAND_SCAN_EXEC2: begin
+            $display("COMMAND_SCAN_EXEC2: Loading track info");
+            if (~sd_busy & ~buff_wait) begin
+              i_current_sector <= 1'd1;
+              sd_buff_type <= UPD765_SD_BUFF_TRACKINFO;
+              i_seek_pos <= {image_track_offsets_in + 1'd1, 8'd0}; //TrackInfo+256bytes
+              buff_addr <= {image_track_offsets_in[0], 8'h14}; //sector size
+              buff_wait <= 1;
+              state <= COMMAND_SCAN_EXEC3;
+            end
+          end
+          
+          COMMAND_SCAN_EXEC3: begin
+            $display("COMMAND_SCAN_EXEC3: Processing sector info, buff_addr=%h, current=%d, total=%d", 
+                     buff_addr, i_current_sector, i_total_sectors);
+            
+            if (~sd_busy & ~buff_wait) begin
+              // Añadir más logging para diagnosticar
+              $display("SCAN_EXEC3: buff_data_in = %h at address %h", buff_data_in, buff_addr);
+              
+              if (buff_addr[7:0] == 8'h14) begin
+                if (!image_edsk[ds0]) begin
+                  i_sector_size <= 8'h80 << buff_data_in[2:0];
+                  $display("Setting sector size from track info: %d", 8'h80 << buff_data_in[2:0]);
+                end
+                buff_addr[7:0] <= 8'h18; // Sector info list
+                buff_wait <= 1;
+              end else if (i_current_sector > i_total_sectors) begin
+                // Sector no encontrado o fin de pista
+                $display("Sector not found: current=%d, total=%d", i_current_sector, i_total_sectors);
+                m_status[UPD765_MAIN_EXM] <= 0;
+                status[0] <= 8'h40; // Abnormal termination
+                status[1] <= 8'h04; // Sector not found
+                status[2] <= 0;
+                state <= COMMAND_READ_RESULTS;
+                int_state[ds0] <= 1'b1;
+                phase <= PHASE_RESPONSE;
+              end else begin
+                // Procesar la lista de info de sectores
+                case (buff_addr[2:0])
+                  0: begin
+                    i_sector_c <= buff_data_in;
+                    $display("Sector[%d] C=%h", i_current_sector, buff_data_in);
+                  end
+                  1: begin
+                    i_sector_h <= buff_data_in;
+                    $display("Sector[%d] H=%h", i_current_sector, buff_data_in);
+                  end
+                  2: begin
+                    i_sector_r <= buff_data_in;
+                    $display("Sector[%d] R=%h", i_current_sector, buff_data_in);
+                  end
+                  3: begin
+                    i_sector_n <= buff_data_in;
+                    $display("Sector[%d] N=%h", i_current_sector, buff_data_in);
+                  end
+                  4: begin
+                    i_sector_st1 <= buff_data_in;
+                    $display("Sector[%d] ST1=%h", i_current_sector, buff_data_in);
+                  end
+                  5: begin
+                    i_sector_st2 <= buff_data_in;
+                    $display("Sector[%d] ST2=%h", i_current_sector, buff_data_in);
+                  end
+                  6: begin 
+                    if (image_edsk[ds0]) begin
+                      i_sector_size[7:0] <= buff_data_in;
+                      $display("Sector[%d] size low=%h", i_current_sector, buff_data_in);
+                    end
+                  end
+                  7: begin
+                    if (image_edsk[ds0]) begin
+                      i_sector_size[15:8] <= buff_data_in;
+                      $display("Sector[%d] size high=%h", i_current_sector, buff_data_in);
+                    end
+                    $display("Sector[%d] info complete: C=%d, H=%d, R=%d, N=%d", 
+                            i_current_sector, i_sector_c, i_sector_h, i_sector_r, i_sector_n);
+                    
+                    // Verificar la dirección del buffer para descartar problemas
+                    $display("Current buffer address: %h, seek_pos: %h", buff_addr, i_seek_pos);
+                    
+                    state <= COMMAND_SCAN_EXEC4;
+                  end
+                endcase
+                buff_addr <= buff_addr + 1'd1;
+                buff_wait <= 1;
+              end
+            end
+          end
+          
+          COMMAND_SCAN_EXEC4: begin
+            $display("COMMAND_SCAN_EXEC4: Checking sector match");
+            $display("Looking for: C=%d, H=%d, R=%d, N=%d", i_c, i_h, i_r, i_n);
+            $display("Found: C=%d, H=%d, R=%d, N=%d", i_sector_c, i_sector_h, i_sector_r, i_sector_n);
+            
+            // Verificar si encontramos el sector correcto
+            if (i_sector_c == i_c && i_sector_r == i_r && i_sector_h == i_h && (i_sector_n == i_n || !i_n)) begin
+              // Sector encontrado
+              $display("Sector match found!");
+              i_bytes_to_read <= i_n ? (8'h80 << (i_n[3] ? 4'h8 : i_n[2:0])) : i_dtl;
+              i_timeout <= OVERRUN_TIMEOUT;
+              state <= COMMAND_SCAN_READ_SECTOR;
+            end else begin
+              // Probar con el siguiente sector
+              $display("Sector mismatch, trying next sector");
+              if (i_sector_c == i_c) i_bc <= 0;
+              i_current_sector <= i_current_sector + 1'd1;
+              i_seek_pos <= i_seek_pos + i_sector_size;
+              state <= COMMAND_SCAN_EXEC3;
+            end
+          end
+          
+          COMMAND_SCAN_READ_SECTOR: begin
+            $display("COMMAND_SCAN_READ_SECTOR: Reading sector data");
+            if (~sd_busy & ~buff_wait) begin
+              // Leer el sector del disco
+              sd_buff_type <= UPD765_SD_BUFF_SECTOR;
+              sd_rd[ds0] <= 1;
+              sd_lba <= i_seek_pos[31:9];
+              sd_busy <= 1;
+              buff_addr <= i_seek_pos[8:0];
+              buff_wait <= 1;
+              state <= COMMAND_SCAN_COMPARE;
+            end
+          end
+          
+          COMMAND_SCAN_COMPARE: begin
+            if (~sd_busy & ~buff_wait) begin
+              // Establecer flags para indicar que necesitamos datos
+              m_status[UPD765_MAIN_RQM] <= 1;
+              m_status[UPD765_MAIN_DIO] <= 0;
+              
+              // Generar una interrupción si estamos en modo no-DMA
+              if (ndma_mode) int_state[ds0] <= 1'b1;
+              
+              if (~old_wr & wr & a0) begin
+                // El CPU ha enviado datos, procesarlos normalmente
+                $display("SCAN comparison: sector data=0x%02X, CPU data=0x%02X, mode=%b", 
+                         buff_data_in, din, i_scan_mode[ds0]);
+                
+                // Comparación según el modo
+                case (i_scan_mode[ds0])
+                  2'b01: begin // SCAN_EQUAL
+                    if (buff_data_in == din) begin
+                      i_scan_match <= 1;
+                      $display("SCAN_EQUAL match found!");
+                    end
+                  end
+                  2'b10: begin // SCAN_LOW_OR_EQUAL
+                    if (buff_data_in <= din) begin
+                      i_scan_match <= 1;
+                      $display("SCAN_LOW_OR_EQUAL match found!");
+                    end
+                  end
+                  2'b11: begin // SCAN_HIGH_OR_EQUAL
+                    if (buff_data_in >= din) begin
+                      i_scan_match <= 1;
+                      $display("SCAN_HIGH_OR_EQUAL match found!");
+                    end
+                  end
+                endcase
+                
+                // Avanzar al siguiente byte
+                i_bytes_to_read <= i_bytes_to_read - 1'd1;
+                i_sector_size <= i_sector_size - 1'd1;
+                buff_addr <= buff_addr + 1'd1;
+                buff_wait <= 1;
+                i_seek_pos <= i_seek_pos + 1'd1;
+                i_timeout <= OVERRUN_TIMEOUT;
+                
+                // Desactivar interrupción ya que hemos procesado el byte
+                if (ndma_mode) int_state[ds0] <= 1'b0;
+                
+                // Comprobar si hemos terminado
+                if (i_scan_match || i_bytes_to_read <= 1) begin
+                  state <= COMMAND_SCAN_NEXT;
+                end else if (&buff_addr) begin
+                  state <= COMMAND_SCAN_READ_SECTOR;
+                end else begin
+                  state <= COMMAND_SCAN_COMPARE;
+                end
+              end else if (i_timeout == 0) begin
+                // Timeout: el CPU no envió dato para comparar
+                $display("Timeout waiting for CPU data");
+                m_status[UPD765_MAIN_EXM] <= 0;
+                status[0] <= 8'h40; // Abnormal termination
+                status[1] <= 0;
+                status[2] <= 0;
+                state <= COMMAND_READ_RESULTS;
+                int_state[ds0] <= 1'b1;
+                phase <= PHASE_RESPONSE;
+              end else begin
+                i_timeout <= i_timeout - 1'd1;
+              end
+            end
+          end
 
+          COMMAND_SCAN_NEXT: begin
+            $display("COMMAND_SCAN_NEXT: Finalizing scan operation");
+            // Decidir qué hacer después de comparar un sector
+            if (i_scan_match || i_r == i_eot) begin
+              // Terminar si hay coincidencia o llegamos al último sector
+              $display("Ending scan: match=%b, r=%d, eot=%d", i_scan_match, i_r, i_eot);
+              m_status[UPD765_MAIN_EXM] <= 0;
+              status[0] <= 8'h00;
+              status[1] <= 8'h00;
+              
+              // Configurar ST2 con los bits de resultado de SCAN apropiados
+              if (i_scan_match) begin
+                case (i_scan_mode[ds0])
+                  2'b01: begin
+                    status[2] <= 8'h10; // SCAN_EQUAL satisfecho (bits 2-3 = 11)
+                    $display("Setting ST2=0x10 for SCAN_EQUAL match");
+                  end
+                  2'b10: begin 
+                    status[2] <= 8'h08; // SCAN_LOW_OR_EQUAL satisfecho (bits 2-3 = 10)
+                    $display("Setting ST2=0x08 for SCAN_LOW_OR_EQUAL match");
+                  end
+                  2'b11: begin
+                    status[2] <= 8'h08; // SCAN_HIGH_OR_EQUAL satisfecho (bits 2-3 = 10)
+                    $display("Setting ST2=0x08 for SCAN_HIGH_OR_EQUAL match");
+                  end
+                endcase
+              end else begin
+                status[2] <= 8'h00; // No se encontró coincidencia
+                $display("Setting ST2=0x00 for no match");
+              end
+              
+              state <= COMMAND_READ_RESULTS;
+              int_state[ds0] <= 1'b1;
+              phase <= PHASE_RESPONSE;
+            end else begin
+              // Continuar con el siguiente sector según STP
+              $display("Moving to next sector with STP=%d", i_stp);
+              case (i_stp)
+                2'b00, 2'b01: begin
+                  i_r <= i_r + 1'd1; // STP=1: siguiente sector
+                  $display("STP=1, next sector: %d", i_r + 1'd1);
+                end
+                2'b10: begin 
+                  i_r <= i_r + 2'd2; // STP=2: saltar un sector
+                  $display("STP=2, next sector: %d", i_r + 2'd2);
+                end
+                2'b11: begin
+                  i_r <= i_r + 2'd3; // STP=3: saltar dos sectores
+                  $display("STP=3, next sector: %d", i_r + 2'd3);
+                end
+              endcase
+              
+              // Reiniciar para la siguiente búsqueda
+              i_scan_match <= 0;
+              state <= COMMAND_SCAN_EXEC2;
+            end
+          end
 
           COMMAND_FORMAT_TRACK: begin
             int_state <= '{0, 0};
@@ -1605,13 +1763,13 @@ typedef enum bit [1:0] {
             //					int_state[ds0] <= 1'b1;
           end
 
-          // Añadir logs de diagnóstico al COMMAND_SETUP_VALIDATION
+
           COMMAND_SETUP_VALIDATION: begin
             $display("COMMAND_SETUP_VALIDATION: scan_mode=%b, i_command=%d", i_scan_mode[ds0],
                      i_command);
             $display("Disk conditions: motor=%b, ready=%b, image_ready=%b", motor[ds0], ready[ds0],
                      image_ready[ds0]);
-
+          
             if (~motor[ds0] | ~ready[ds0]) begin
               $display("ERROR: Disk not ready - motor=%b, ready=%b, image_ready=%b", motor[ds0],
                        ready[ds0], image_ready[ds0]);
@@ -1632,15 +1790,23 @@ typedef enum bit [1:0] {
               int_state[ds0] <= 1'b1;
               phase <= PHASE_RESPONSE;
             end else begin
-              if (i_scan_mode[ds0] != 2'b00) begin
-                i_scan_match <= 0;  // Reset scan match flag at start of execution
-              end
-              $display("Transitioning to execute phase with scan_mode=%b, command=%d", i_scan_mode[ds0],
-                       i_command);
               phase <= PHASE_EXECUTE;
-              state <= i_command;
+              
+              // Redirigir a los estados específicos de SCAN si es necesario
+              if (i_scan_mode[ds0] != 2'b00) begin
+                i_scan_match <= 0;  // Reset match flag
+                $display("Dirigiendo a los estados específicos de SCAN: scan_mode=%b", i_scan_mode[ds0]);
+                state <= COMMAND_SCAN_EXEC1;  // Estado específico para SCAN
+              end else begin
+                $display("Procediendo con el comando normal: i_command=%d", i_command);
+                state <= i_command;
+              end
             end
           end
+
+ 
+         
+          
 
           // Añadir logs al estado COMMAND_RW_DATA_EXEC
           COMMAND_RW_DATA_EXEC: begin
