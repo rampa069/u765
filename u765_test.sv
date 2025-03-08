@@ -39,7 +39,7 @@ u765 #(100) u765 (
 	.ready(ready),
 	.motor(motor),
 	.available(available),
-	.fast(1'b1),
+	.fast(1'b0),
 	.a0(a0),
 	.nRD(nRD),
 	.nWR(nWR),

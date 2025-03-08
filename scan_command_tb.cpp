@@ -351,10 +351,9 @@ void cmd_read_data(int c, int h, int r, int n, int eot, int gpl, int dtl) {
     read_result("READ DATA");
 }
 
-// SCAN commands for data comparison
 void cmd_scan_equal(int c, int h, int r, int n, int eot, int gpl, int stp) {
     printf("=== SCAN EQUAL ===\n");
-    sendbyte(0x11);
+    sendbyte(0x11);  // Opcode SCAN EQUAL
     sendbyte(h << 2);  // Head << 2 | Drive
     sendbyte(c);       // Cylinder
     sendbyte(h);       // Head
@@ -362,9 +361,9 @@ void cmd_scan_equal(int c, int h, int r, int n, int eot, int gpl, int stp) {
     sendbyte(n);       // Number (sector size)
     sendbyte(eot);     // End of track
     sendbyte(gpl);     // Gap length
-    sendbyte(stp);     // Step (01 or 02)
+    sendbyte(stp);     // Step
     
-    // Now send the data to compare
+    // AHORA: Enviar datos byte a byte para comparación
     int status;
     int offset = 0;
     int sector_size = (n == 2) ? 512 : 128 << n;
@@ -372,48 +371,34 @@ void cmd_scan_equal(int c, int h, int r, int n, int eot, int gpl, int stp) {
     printf("Sending %d bytes for comparison...\n", sector_size);
     
     while(offset < sector_size) {
-        status = readstatus();
-        if ((status & 0xe0) != 0x80) {
-            // Controller not ready or execution ended
-            break;
-        }
+        // Esperar a que el controlador esté listo para recibir datos
+        do {
+            status = readstatus();
+        } while ((status & 0xcf) != 0x80);
         
-        tb->a0 = 1;
-        tb->nRD = 1;
-        tb->nWR = 0;
-        tb->din = compare_data[offset];
-        tick(1);
-        tick(0);
-        tick(1);
-        tick(0);
-        tb->nWR = 1;
-        tick(1);
-        tick(0);
+        // Enviar byte de comparación
+        sendbyte(compare_data[offset]);
         
         printf("%02x ", compare_data[offset]);
         offset++;
         if ((offset % 16) == 0) printf("\n");
-        
-        // After sending enough data, activate TC to terminate
-        if (offset >= sector_size/2) {
-            set_tc(true);
-            wait(10);
-            set_tc(false);
-            break;
-        }
     }
     printf("\n");
     
-    // Wait for the scan operation to complete
+    // Esperar un poco para procesar
     wait(500);
     
-    // Read result bytes
+    // Leer resultado
+    cmd_sense_interrupt();
+
     read_result("SCAN EQUAL");
+    // Reconocer la interrupción después de un comando SCAN
+     cmd_sense_interrupt();
 }
 
 void cmd_scan_low_or_equal(int c, int h, int r, int n, int eot, int gpl, int stp) {
-    printf("=== SCAN LOW OR EQUAL ===\n");
-    sendbyte(0x19);
+    printf("=== SCAN LOW OR EQUAL EQUAL ===\n");
+    sendbyte(0x19);  // Opcode SCAN EQUAL
     sendbyte(h << 2);  // Head << 2 | Drive
     sendbyte(c);       // Cylinder
     sendbyte(h);       // Head
@@ -421,9 +406,9 @@ void cmd_scan_low_or_equal(int c, int h, int r, int n, int eot, int gpl, int stp
     sendbyte(n);       // Number (sector size)
     sendbyte(eot);     // End of track
     sendbyte(gpl);     // Gap length
-    sendbyte(stp);     // Step (01 or 02)
+    sendbyte(stp);     // Step
     
-    // Now send the data to compare
+    // AHORA: Enviar datos byte a byte para comparación
     int status;
     int offset = 0;
     int sector_size = (n == 2) ? 512 : 128 << n;
@@ -431,48 +416,31 @@ void cmd_scan_low_or_equal(int c, int h, int r, int n, int eot, int gpl, int stp
     printf("Sending %d bytes for comparison...\n", sector_size);
     
     while(offset < sector_size) {
-        status = readstatus();
-        if ((status & 0xe0) != 0x80) {
-            // Controller not ready or execution ended
-            break;
-        }
+        // Esperar a que el controlador esté listo para recibir datos
+        do {
+            status = readstatus();
+        } while ((status & 0xcf) != 0x80);
         
-        tb->a0 = 1;
-        tb->nRD = 1;
-        tb->nWR = 0;
-        tb->din = compare_data[offset];
-        tick(1);
-        tick(0);
-        tick(1);
-        tick(0);
-        tb->nWR = 1;
-        tick(1);
-        tick(0);
+        // Enviar byte de comparación
+        sendbyte(compare_data[offset]);
         
         printf("%02x ", compare_data[offset]);
         offset++;
         if ((offset % 16) == 0) printf("\n");
-        
-        // After sending enough data, activate TC to terminate
-        if (offset >= sector_size/2) {
-            set_tc(true);
-            wait(10);
-            set_tc(false);
-            break;
-        }
     }
     printf("\n");
     
-    // Wait for the scan operation to complete
+    // Esperar un poco para procesar
     wait(500);
     
-    // Read result bytes
-    read_result("SCAN LOW OR EQUAL");
+    // Leer resultado
+    read_result("SCAN EQUAL");
+
 }
 
 void cmd_scan_high_or_equal(int c, int h, int r, int n, int eot, int gpl, int stp) {
     printf("=== SCAN HIGH OR EQUAL ===\n");
-    sendbyte(0x1d);
+    sendbyte(0x1D);  // Opcode SCAN EQUAL
     sendbyte(h << 2);  // Head << 2 | Drive
     sendbyte(c);       // Cylinder
     sendbyte(h);       // Head
@@ -480,9 +448,9 @@ void cmd_scan_high_or_equal(int c, int h, int r, int n, int eot, int gpl, int st
     sendbyte(n);       // Number (sector size)
     sendbyte(eot);     // End of track
     sendbyte(gpl);     // Gap length
-    sendbyte(stp);     // Step (01 or 02)
+    sendbyte(stp);     // Step
     
-    // Now send the data to compare
+    // AHORA: Enviar datos byte a byte para comparación
     int status;
     int offset = 0;
     int sector_size = (n == 2) ? 512 : 128 << n;
@@ -490,43 +458,27 @@ void cmd_scan_high_or_equal(int c, int h, int r, int n, int eot, int gpl, int st
     printf("Sending %d bytes for comparison...\n", sector_size);
     
     while(offset < sector_size) {
-        status = readstatus();
-        if ((status & 0xe0) != 0x80) {
-            // Controller not ready or execution ended
-            break;
-        }
+        // Esperar a que el controlador esté listo para recibir datos
+        do {
+            status = readstatus();
+        } while ((status & 0xcf) != 0x80);
         
-        tb->a0 = 1;
-        tb->nRD = 1;
-        tb->nWR = 0;
-        tb->din = compare_data[offset];
-        tick(1);
-        tick(0);
-        tick(1);
-        tick(0);
-        tb->nWR = 1;
-        tick(1);
-        tick(0);
+        // Enviar byte de comparación
+        sendbyte(compare_data[offset]);
         
         printf("%02x ", compare_data[offset]);
         offset++;
         if ((offset % 16) == 0) printf("\n");
-        
-        // After sending enough data, activate TC to terminate
-        if (offset >= sector_size/2) {
-            set_tc(true);
-            wait(10);
-            set_tc(false);
-            break;
-        }
     }
     printf("\n");
     
-    // Wait for the scan operation to complete
+    // Esperar un poco para procesar
     wait(500);
     
-    // Read result bytes
-    read_result("SCAN HIGH OR EQUAL");
+    // Leer resultado
+    read_result("SCAN EQUAL");
+    // Reconocer la interrupción después de un comando SCAN
+    cmd_sense_interrupt();
 }
 
 // Mount a disk image

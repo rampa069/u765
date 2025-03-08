@@ -269,6 +269,7 @@ typedef enum bit [1:0] {
     reg [2:0] i_weak_sector;
     reg [15:0] i_bytes_to_read;
     reg [2:0] i_substate;
+    reg [2:0] r_substate;
     reg [1:0] old_mounted;
     reg [1:0] old_ready;
     reg [15:0] i_track_offset;
@@ -1167,57 +1168,77 @@ if (~sd_busy) begin
   end
 end
 
-          // Fix the COMMAND_READ_RESULTS state to correctly return the status registers
-          COMMAND_READ_RESULTS: begin
-            phase <= PHASE_RESPONSE;
-            m_status[UPD765_MAIN_DIO] <= 1;
-            if (~sd_busy & ~buff_wait) begin
-              m_status[UPD765_MAIN_RQM] <= 1;
-              if (~old_rd & rd & a0) begin
-                case (i_substate)
+COMMAND_READ_RESULTS: begin
+  reg [15:0] result_read_timeout;
+  
+  result_read_timeout <= result_read_timeout + 1;
+  $display("RESULTS: r_substate: %02x", r_substate);
+  if (result_read_timeout > 1000) begin
+      $display("EMERGENCY RESET: Result reading timeout");
+      // Forzar reset completo
+      state <= COMMAND_RESET;
+      m_status <= 8'h80;
+      phase <= PHASE_COMMAND;
+      result_read_timeout <= 0;
+  end else begin
+      // Forzar estado de respuesta y preparar lectura de resultados
+      phase <= PHASE_RESPONSE;
+      m_status[UPD765_MAIN_DIO] <= 1;  // Dirección de datos de resultados
+      m_status[UPD765_MAIN_RQM] <= 1;  // Solicitar lectura
+      m_status[UPD765_MAIN_CB] <= 1;   // Mantener comando ocupado
+      
+      // Intentar leer resultados independientemente del estado anterior
+      if (1'b1) begin  // Siempre intentar leer
+          if (~old_rd & rd & a0) begin
+              // Resetear timeout cuando hay progreso
+              result_read_timeout <= 0;
+              
+              case (r_substate)
                   0: begin
-                    m_data <= {status[0][7:3], hds, 1'b0, ds0};  // status[0][7:3]
-                    i_substate <= 1;
-                    int_state[ds0] <= 1'b0;
-                    $display("READ_RESULTS: ST0=0x%02x (bits 7-3=%b, hds=%b, ds0=%b)", status[0],
-                             status[0][7:3], hds, ds0);
+                      m_data <= {status[0][7:3], hds, 1'b0, ds0};
+                      r_substate <= 1;
+                      int_state[ds0] <= 1'b0;
+                      $display("READ_RESULTS: ST0=0x%02x", m_data);
                   end
                   1: begin
-                    m_data <= status[1];
-                    i_substate <= 2;
-                    $display("READ_RESULTS: ST1=0x%02x", status[1]);
+                      m_data <= status[1];
+                      r_substate <= 2;
+                      $display("READ_RESULTS: ST1=0x%02x", m_data);
                   end
                   2: begin
-                    m_data <= status[2];
-                    i_substate <= 3;
-                    $display("READ_RESULTS: ST2=0x%02x", status[2]);
+                      m_data <= status[2];
+                      r_substate <= 3;
+                      $display("READ_RESULTS: ST2=0x%02x", m_data);
                   end
                   3: begin
-                    m_data <= i_sector_c;
-                    i_substate <= 4;
-                    $display("READ_RESULTS: C=0x%02x", i_sector_c);
+                      m_data <= i_sector_c;
+                      r_substate <= 4;
+                      $display("READ_RESULTS: C=0x%02x", m_data);
                   end
                   4: begin
-                    m_data <= i_sector_h;
-                    i_substate <= 5;
-                    $display("READ_RESULTS: H=0x%02x", i_sector_h);
+                      m_data <= i_sector_h;
+                      r_substate <= 5;
+                      $display("READ_RESULTS: H=0x%02x", m_data);
                   end
                   5: begin
-                    m_data <= i_sector_r;
-                    i_substate <= 6;
-                    $display("READ_RESULTS: R=0x%02x", i_sector_r);
+                      m_data <= i_sector_r;
+                      r_substate <= 6;
+                      $display("READ_RESULTS: R=0x%02x", m_data);
                   end
                   6: begin
-                    m_data <= i_sector_n;
-                    state  <= COMMAND_IDLE;
-                    $display("READ_RESULTS: N=0x%02x", i_sector_n);
+                      m_data <= i_sector_n;
+                      // Forzar transición completa a IDLE
+                      state <= COMMAND_IDLE;
+                      m_status <= 8'h80;  // Resetear a estado inicial
+                      phase <= PHASE_COMMAND;
+                      r_substate <= 0;
+                      $display("READ_RESULTS: N=0x%02x", m_data);
                   end
-                  7: ;  //not happen
-                endcase
-              end
-            end else m_status[UPD765_MAIN_RQM] <= 0;
+              endcase
           end
-
+      end
+  end
+end
           COMMAND_SCAN_EQUAL: begin
             int_state <= '{0, 0};
             i_scan_mode[ds0] <= 2'b01;  // SCAN_EQUAL mode
@@ -1593,61 +1614,81 @@ end
 
           COMMAND_SCAN_NEXT: begin
             $display("COMMAND_SCAN_NEXT: Finalizing scan operation");
-            // Decidir qué hacer después de comparar un sector
-            if (i_scan_match || i_r == i_eot) begin
-              // Terminar si hay coincidencia o llegamos al último sector
-              $display("Ending scan: match=%b, r=%d, eot=%d", i_scan_match, i_r, i_eot);
-              m_status[UPD765_MAIN_EXM] <= 0;
-              status[0] <= 8'h00;
-              status[1] <= 8'h00;
-              
-              // Configurar ST2 con los bits de resultado de SCAN apropiados
-              if (i_scan_match) begin
+            
+            // Terminar inmediatamente si hay coincidencia
+            if (i_scan_match) begin
+                $display("Ending scan: Immediate match found");
+                
+                // Limpiar bandera de ejecución
+                m_status[UPD765_MAIN_EXM] <= 0;
+                
+                // Configurar ST0 (status 0) 
+                status[0] <= 8'h00;  // Operación normal
+                status[1] <= 8'h00;  // Sin errores
+                
+                // Configurar ST2 con los bits de resultado de SCAN
                 case (i_scan_mode[ds0])
-                  2'b01: begin
-                    status[2] <= 8'h10; // SCAN_EQUAL satisfecho (bits 2-3 = 11)
-                    $display("Setting ST2=0x10 for SCAN_EQUAL match");
-                  end
-                  2'b10: begin 
-                    status[2] <= 8'h08; // SCAN_LOW_OR_EQUAL satisfecho (bits 2-3 = 10)
-                    $display("Setting ST2=0x08 for SCAN_LOW_OR_EQUAL match");
-                  end
-                  2'b11: begin
-                    status[2] <= 8'h08; // SCAN_HIGH_OR_EQUAL satisfecho (bits 2-3 = 10)
-                    $display("Setting ST2=0x08 for SCAN_HIGH_OR_EQUAL match");
-                  end
+                    2'b01: begin
+                        status[2] <= 8'h10; // SCAN_EQUAL satisfecho
+                        $display("Setting ST2=0x10 for SCAN_EQUAL match");
+                    end
+                    2'b10: begin 
+                        status[2] <= 8'h08; // SCAN_LOW_OR_EQUAL satisfecho
+                        $display("Setting ST2=0x08 for SCAN_LOW_OR_EQUAL match");
+                    end
+                    2'b11: begin
+                        status[2] <= 8'h08; // SCAN_HIGH_OR_EQUAL satisfecho
+                        $display("Setting ST2=0x08 for SCAN_HIGH_OR_EQUAL match");
+                    end
                 endcase
-              end else begin
-                status[2] <= 8'h00; // No se encontró coincidencia
-                $display("Setting ST2=0x00 for no match");
-              end
-              
-              state <= COMMAND_READ_RESULTS;
-              int_state[ds0] <= 1'b1;
-              phase <= PHASE_RESPONSE;
-            end else begin
-              // Continuar con el siguiente sector según STP
-              $display("Moving to next sector with STP=%d", i_stp);
-              case (i_stp)
-                2'b00, 2'b01: begin
-                  i_r <= i_r + 1'd1; // STP=1: siguiente sector
-                  $display("STP=1, next sector: %d", i_r + 1'd1);
-                end
-                2'b10: begin 
-                  i_r <= i_r + 2'd2; // STP=2: saltar un sector
-                  $display("STP=2, next sector: %d", i_r + 2'd2);
-                end
-                2'b11: begin
-                  i_r <= i_r + 2'd3; // STP=3: saltar dos sectores
-                  $display("STP=3, next sector: %d", i_r + 2'd3);
-                end
-              endcase
-              
-              // Reiniciar para la siguiente búsqueda
-              i_scan_match <= 0;
-              state <= COMMAND_SCAN_EXEC2;
+                
+                // Transición directa a lectura de resultados
+                state <= COMMAND_READ_RESULTS;
+                int_state[ds0] <= 1'b1;
+                phase <= PHASE_RESPONSE;
+                r_substate <= 0;
+            end 
+            // Si no hay coincidencia y no se ha alcanzado EOT, continuar buscando
+            else if (i_r < i_eot) begin
+                // Continuar con el siguiente sector según STP
+                case (i_stp)
+                    2'b00, 2'b01: begin
+                        i_r <= i_r + 1'd1; // STP=1: siguiente sector
+                        $display("STP=1, next sector: %d", i_r + 1'd1);
+                    end
+                    2'b10: begin 
+                        i_r <= i_r + 2'd2; // STP=2: saltar un sector
+                        $display("STP=2, next sector: %d", i_r + 2'd2);
+                    end
+                    2'b11: begin
+                        i_r <= i_r + 2'd3; // STP=3: saltar dos sectores
+                        $display("STP=3, next sector: %d", i_r + 2'd3);
+                    end
+                endcase
+                
+                // Reiniciar para la siguiente búsqueda
+                i_scan_match <= 0;
+                state <= COMMAND_SCAN_EXEC2;
             end
-          end
+            // Si se alcanzó EOT sin coincidencia
+            else begin
+                $display("Ending scan: No match found, reached EOT");
+                
+                // Limpiar bandera de ejecución
+                m_status[UPD765_MAIN_EXM] <= 0;
+                
+                // Configurar ST0 y ST1 para indicar sin coincidencia
+                status[0] <= 8'h00;
+                status[1] <= 8'h00;
+                status[2] <= 8'h00;
+                
+                // Transición a lectura de resultados
+                state <= COMMAND_READ_RESULTS;
+                int_state[ds0] <= 1'b1;
+                phase <= PHASE_RESPONSE;
+                i_substate <= 0;
+            end
+        end
 
           COMMAND_FORMAT_TRACK: begin
             int_state <= '{0, 0};
